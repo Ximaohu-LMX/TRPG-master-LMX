@@ -71,6 +71,23 @@ function Start-ServerProcess {
     }
 }
 
+function Get-AvailablePort {
+    param([int]$PreferredPort)
+
+    for ($port = $PreferredPort; $port -lt $PreferredPort + 20; $port++) {
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $port)
+        try {
+            $listener.Start()
+            return $port
+        } catch {
+            continue
+        } finally {
+            $listener.Stop()
+        }
+    }
+    throw "No available port near $PreferredPort"
+}
+
 $form = [System.Windows.Forms.Form]::new()
 $form.Text = 'TRPG-master Qwen Test Launcher'
 $form.Size = [System.Drawing.Size]::new(520, 300)
@@ -136,8 +153,10 @@ $startButton.Add_Click({
         return
     }
 
-    $backendUrl = "http://127.0.0.1:$BackendPort"
-    $frontendUrl = "http://127.0.0.1:$FrontendPort"
+    $activeBackendPort = Get-AvailablePort $BackendPort
+    $activeFrontendPort = Get-AvailablePort $FrontendPort
+    $backendUrl = "http://127.0.0.1:$activeBackendPort"
+    $frontendUrl = "http://127.0.0.1:$activeFrontendPort"
     $backendEnvironment = @{
         'HOST_MODEL_PROVIDER' = 'qwen'
         'QWEN_API_KEY' = $apiKey
@@ -155,8 +174,8 @@ $startButton.Add_Click({
 
         $status.Text = 'Starting backend and frontend...'
         [System.Windows.Forms.Application]::DoEvents()
-        Start-ServerProcess $pythonPath "-m uvicorn app.main:app --host 127.0.0.1 --port $BackendPort" $backendDir $backendEnvironment
-        Start-ServerProcess $node.Source "node_modules\vite\bin\vite.js --host 127.0.0.1 --port $FrontendPort" $frontendDir @{ 'VITE_API_BASE_URL' = "$backendUrl/api/v1" }
+        Start-ServerProcess $pythonPath "-m uvicorn app.main:app --host 127.0.0.1 --port $activeBackendPort" $backendDir $backendEnvironment
+        Start-ServerProcess $node.Source "node_modules\vite\bin\vite.js --host 127.0.0.1 --port $activeFrontendPort" $frontendDir @{ 'VITE_API_BASE_URL' = "$backendUrl/api/v1" }
 
         $status.Text = "Ready: frontend $frontendUrl  backend $backendUrl/docs"
         $keyBox.Clear()
