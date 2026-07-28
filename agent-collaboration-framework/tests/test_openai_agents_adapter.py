@@ -787,7 +787,11 @@ class QwenHostAgentAdapterTests(
         )
         adapter = make_adapter(
             model,
-            config=make_config(max_turns=20, max_tool_calls=8),
+            config=make_config(
+                max_turns=20,
+                max_tool_calls=8,
+                timeout_seconds=5,
+            ),
             registry=registry,
         )
 

@@ -25,6 +25,7 @@ const BACKEND_DIR = resolve(HERE, '../../trpg-backend')
  */
 const PORT = Number(process.env.E2E_PORT ?? 8099)
 const BASE_URL = `http://127.0.0.1:${PORT}`
+const TSX_CLI = resolve(HERE, '../node_modules/tsx/dist/cli.mjs')
 
 /**
  * 每次跑都用**全新的 e2e.db**。
@@ -52,11 +53,19 @@ const backendEnv = {
  * 建出这个虚拟环境（CI 和本地都一样），这样不额外要求 `uv` 本身在 PATH 上——
  * 开发机上它经常就不在，写成 `uv run` 会直接 command not found。
  */
-const BACKEND_VENV_BIN = resolve(BACKEND_DIR, '.venv/bin')
-const ROOT_VENV_BIN = resolve(BACKEND_DIR, '../.venv/bin')
-const VENV_BIN = existsSync(resolve(BACKEND_VENV_BIN, 'alembic'))
+const VENV_FOLDER = process.platform === 'win32' ? 'Scripts' : 'bin'
+const EXECUTABLE_SUFFIX = process.platform === 'win32' ? '.exe' : ''
+const BACKEND_VENV_BIN = resolve(BACKEND_DIR, '.venv', VENV_FOLDER)
+const ROOT_VENV_BIN = resolve(BACKEND_DIR, '..', '.venv', VENV_FOLDER)
+const VENV_BIN = existsSync(
+  resolve(BACKEND_VENV_BIN, `alembic${EXECUTABLE_SUFFIX}`)
+)
   ? BACKEND_VENV_BIN
   : ROOT_VENV_BIN
+
+function venvExecutable(name: string): string {
+  return resolve(VENV_BIN, `${name}${EXECUTABLE_SUFFIX}`)
+}
 
 function run(command: string, args: string[], label: string): Promise<void> {
   return new Promise((resolvePromise, rejectPromise) => {
@@ -124,11 +133,11 @@ let backendExitCode: number | undefined
 async function main(): Promise<number> {
   await assertPortFree(PORT)
   rmSync(DB_FILE, { force: true })
-  await run(`${VENV_BIN}/alembic`, ['upgrade', 'head'], 'alembic')
-  await run(`${VENV_BIN}/python`, ['scripts/load_paper_chase.py'], '追书人 loader')
+  await run(venvExecutable('alembic'), ['upgrade', 'head'], 'alembic')
+  await run(venvExecutable('python'), ['scripts/load_paper_chase.py'], '追书人 loader')
 
   backend = spawn(
-    `${VENV_BIN}/uvicorn`,
+    venvExecutable('uvicorn'),
     ['app.main:app', '--host', '127.0.0.1', '--port', String(PORT)],
     { cwd: BACKEND_DIR, env: backendEnv, stdio: ['ignore', 'ignore', 'inherit'] }
   )
@@ -139,11 +148,19 @@ async function main(): Promise<number> {
 
   return await new Promise<number>((resolvePromise) => {
     const tests = spawn(
-      'npx',
-      ['tsx', '--test', '--test-reporter=spec', process.env.E2E_ONLY ?? 'tests/*.e2e.ts'],
-      { cwd: resolve(HERE, '..'), env: { ...process.env, E2E_BASE_URL: BASE_URL }, stdio: 'inherit' }
+      process.execPath,
+      [TSX_CLI, '--test', '--test-reporter=spec', process.env.E2E_ONLY ?? 'tests/*.e2e.ts'],
+      {
+        cwd: resolve(HERE, '..'),
+        env: { ...process.env, E2E_BASE_URL: BASE_URL },
+        stdio: 'inherit',
+      }
     )
     tests.on('exit', (code) => resolvePromise(code ?? 1))
+    tests.on('error', (error) => {
+      console.error(error)
+      resolvePromise(1)
+    })
   })
 }
 

@@ -58,7 +58,6 @@ export type {
   RoomJoinPayload,
   PlayerReadyPayload,
   ActionSubmitPayload,
-  ActionBroadcastPayload,
   GameStartPayload,
   SessionBoundPayload,
   NarrationPushPayload,
@@ -73,13 +72,15 @@ export type {
   ViewPrivatePayload,
   CheckRequestPayload,
   CheckResultPayload,
-  ChatMessagePayload,
-  ChatMessageRead as ChatMessage,
-  ChatSendPayload,
   SanCheckRequestPayload,
   SanCheckResultPayload,
   ClueGrantedPayload,
   ErrorPayload,
+  // 讨论区 + 行动广播（issue #107）—— 对应后端 dto/ws.py 与 dto/chat.py
+  ChatSendPayload,
+  ChatMessagePayload,
+  ActionBroadcastPayload,
+  ChatMessageRead as ChatMessage,
 } from './generated/dto';
 
 /** GET /api/v1/me/rooms 返回项。 */
@@ -149,6 +150,8 @@ export type ServerToClientEvent =
   | { type: 'tool.completed'; payload: ToolCompletedPayload }
   | { type: 'turn.failed'; payload: TurnFailedPayload }
   | { type: 'view.updated'; payload: ViewUpdatedPayload }
+  | { type: 'chat.message'; payload: ChatMessagePayload }
+  | { type: 'action.broadcast'; payload: ActionBroadcastPayload }
   | { type: 'room.state'; payload: RoomStatePayload }
   | { type: 'player.joined'; payload: PlayerJoinedPayload }
   | { type: 'turn.begin'; payload: TurnBeginPayload }
@@ -156,8 +159,6 @@ export type ServerToClientEvent =
   | { type: 'view.private'; payload: ViewPrivatePayload }
   | { type: 'check.request'; payload: CheckRequestPayload }
   | { type: 'check.result'; payload: CheckResultPayload }
-  | { type: 'chat.message'; payload: ChatMessagePayload }
-  | { type: 'action.broadcast'; payload: ActionBroadcastPayload }
   | { type: 'san.check.request'; payload: SanCheckRequestPayload }
   | { type: 'san.check.result'; payload: SanCheckResultPayload }
   | { type: 'clue.granted'; payload: ClueGrantedPayload }

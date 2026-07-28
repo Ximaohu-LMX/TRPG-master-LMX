@@ -352,13 +352,14 @@ async def _broadcast_action_utterance(
     player_id: str,
     utterance: str,
 ) -> None:
-    """广播玩家原话，但不把讨论区消息混入叙事事件历史。"""
+    """广播玩家原话，但不把它写入叙事 replay 事件流。"""
 
     player = await room_service.get_player(db, player_id)
-    nickname = player.nickname if player is not None else "玩家"
+    if player is None or player.room_id != room_id:
+        return
     payload = ActionBroadcastPayload(
         player_id=player_id,
-        nickname=nickname,
+        nickname=player.nickname,
         utterance=utterance,
     )
     envelope = ServerEnvelope(
@@ -493,22 +494,23 @@ async def room_socket(websocket: WebSocket, room_id: str, token: str | None = No
                         ):
                             bound_player_id = player_id
                             assert bound_player_id is not None
-                            try:
-                                current_view = await turn_application.current_player_view(
-                                    room_id=room_id,
-                                    player_id=bound_player_id,
-                                )
-                            except Exception:
-                                # Lobby/Building rooms do not have an Engine
-                                # runtime yet. Joining remains valid; game.start
-                                # will send the initial view once it exists.
-                                pass
-                            else:
-                                await _send_view_updated(
-                                    websocket,
-                                    bound_player_id,
-                                    current_view,
-                                )
+                            with anyio.CancelScope(shield=True):
+                                try:
+                                    current_view = await turn_application.current_player_view(
+                                        room_id=room_id,
+                                        player_id=bound_player_id,
+                                    )
+                                except Exception:
+                                    # Lobby/Building rooms do not have an Engine
+                                    # runtime yet. Joining remains valid; game.start
+                                    # will send the initial view once it exists.
+                                    pass
+                                else:
+                                    await _send_view_updated(
+                                        websocket,
+                                        bound_player_id,
+                                        current_view,
+                                    )
                         else:
                             return
                         continue

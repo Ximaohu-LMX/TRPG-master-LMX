@@ -106,6 +106,18 @@ def create_app() -> FastAPI:
     app.include_router(api_router)
     app.include_router(ws_router)
 
+    @app.get("/", response_model=ApiResponse[dict[str, str]], include_in_schema=False)
+    async def root() -> ApiResponse[dict[str, str]]:
+        return ApiResponse.ok(
+            {
+                "service": "TRPG-master API",
+                "status": "ok",
+                "api": "/api/v1",
+                "health": "/api/v1/health",
+                "docs": "/docs",
+            }
+        )
+
     # ---- 以下四个异常处理器，按"从具体到通用"的顺序注册 ----
     # FastAPI/Starlette 在分发异常时，会按抛出异常的实际类型去匹配"最具体"的
     # handler（沿着异常类的 MRO 找），所以即使 AppException/RequestValidationError/

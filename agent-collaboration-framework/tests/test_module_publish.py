@@ -20,7 +20,9 @@ FIXTURES = ROOT / "fixtures"
 
 class ModulePublishTests(unittest.TestCase):
     def passing_report(self) -> ValidationReport:
-        return validate_module_json((FIXTURES / "demo-module.json").read_text())
+        return validate_module_json(
+            (FIXTURES / "demo-module.json").read_text(encoding="utf-8")
+        )
 
     def test_passing_report_publishes_normalized_module_json(self) -> None:
         report = self.passing_report()
@@ -86,7 +88,7 @@ class ModulePublishTests(unittest.TestCase):
 
     def test_passing_report_with_draft_content_is_rejected(self) -> None:
         draft = ModuleDraft.model_validate_json(
-            (FIXTURES / "demo-module.json").read_text()
+            (FIXTURES / "demo-module.json").read_text(encoding="utf-8")
         )
         report = ValidationReport(status="pass", content=draft)  # type: ignore[arg-type]
         with tempfile.TemporaryDirectory() as directory:
@@ -100,7 +102,7 @@ class ModulePublishTests(unittest.TestCase):
     def test_raw_dict_draft_and_module_content_are_rejected(self) -> None:
         report = self.passing_report()
         draft = ModuleDraft.model_validate_json(
-            (FIXTURES / "demo-module.json").read_text()
+            (FIXTURES / "demo-module.json").read_text(encoding="utf-8")
         )
         invalid_inputs = ({}, draft, report.content)
         with tempfile.TemporaryDirectory() as directory:

@@ -75,7 +75,8 @@ class GameStartPayload(CamelModel):
 
 
 class ActionSubmitPayload(CamelModel):
-    """action.submit 事件 payload。
+    """action.submit 事件 payload——issue #107 定稿后玩家对 AI 主持人说的
+    **唯一**事件（行动或提问都走它，"是哪种"由 AI 判断，协议层不预分类）。
 
     `client_action_id` 是客户端为一次逻辑动作生成的稳定幂等键；网络重试必须
     复用原值。两个字段都在契约层拒绝空白文本。
@@ -122,7 +123,16 @@ class RoomRejoinPayload(CamelModel):
 
 
 class ChatSendPayload(CamelModel):
-    """chat.send 讨论区消息；该通道不会进入 Host Agent 上下文。"""
+    """chat.send 事件 payload（issue #107）——玩家往**讨论区**发一条消息。
+
+    讨论区跟「对 AI 主持人说话」（action.submit）是两条完全独立的通道：
+    讨论区消息只在玩家之间广播，**永远不进任何 LLM 上下文**（成本 + 玩家
+    需要"AI 听不见"的商量空间，这是 #107 的立项理由）。
+
+    `client_message_id` 是客户端生成的去重键：断线重连后客户端可能重发同一条
+    消息，服务端靠 `(player_id, client_message_id)` 唯一约束保证只落一行、
+    重发拿到与第一次一致的广播。
+    """
 
     text: str = Field(..., min_length=1, max_length=2000)
     client_message_id: str = Field(..., min_length=1, max_length=64)
@@ -142,25 +152,6 @@ class NarrationPushPayload(CamelModel):
     """narration.push 推送 payload。"""
 
     text: str
-
-
-class ChatMessagePayload(CamelModel):
-    """chat.message 讨论区广播 payload。"""
-
-    message_id: str
-    player_id: str
-    nickname: str
-    text: str
-    sent_at: UtcDatetime
-    client_message_id: str
-
-
-class ActionBroadcastPayload(CamelModel):
-    """action.submit 原话广播 payload。"""
-
-    player_id: str
-    nickname: str
-    utterance: str
 
 
 class TurnStartedPayload(CamelModel):
@@ -201,6 +192,25 @@ class TurnFailedPayload(CamelModel):
 class ViewUpdatedPayload(CamelModel):
     player_id: str
     player_view: PlayerView
+
+
+class ChatMessagePayload(CamelModel):
+    """讨论区消息的房间广播；不会进入 Host Agent 上下文。"""
+
+    message_id: str
+    player_id: str
+    nickname: str
+    text: str
+    sent_at: UtcDatetime
+    client_message_id: str
+
+
+class ActionBroadcastPayload(CamelModel):
+    """玩家提交给主持人的原话广播。"""
+
+    player_id: str
+    nickname: str
+    utterance: str
 
 
 class RoomStatePayload(CamelModel):

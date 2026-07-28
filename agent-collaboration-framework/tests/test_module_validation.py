@@ -24,7 +24,9 @@ PARSER_EXAMPLES = (
 
 class ModuleValidationTests(unittest.TestCase):
     def test_valid_demo_returns_module_content(self) -> None:
-        report = validate_module_json((FIXTURES / "demo-module.json").read_text())
+        report = validate_module_json(
+            (FIXTURES / "demo-module.json").read_text(encoding="utf-8")
+        )
 
         self.assertTrue(report.is_valid)
         self.assertEqual(report.status, "pass")
@@ -35,7 +37,7 @@ class ModuleValidationTests(unittest.TestCase):
 
     def test_an_existing_module_content_is_accepted(self) -> None:
         content = ModuleContent.model_validate_json(
-            (FIXTURES / "demo-module.json").read_text()
+            (FIXTURES / "demo-module.json").read_text(encoding="utf-8")
         )
 
         report = validate_module(content)
@@ -90,7 +92,9 @@ class ModuleValidationTests(unittest.TestCase):
 
         for filename, expected_code in cases.items():
             with self.subTest(filename=filename):
-                report = validate_module_json((INVALID / filename).read_text())
+                report = validate_module_json(
+                    (INVALID / filename).read_text(encoding="utf-8")
+                )
                 self.assertFalse(report.is_valid)
                 self.assertEqual(report.status, "needs_revision")
                 self.assertIsNone(report.content)
@@ -101,7 +105,7 @@ class ModuleValidationTests(unittest.TestCase):
 
     def test_unknown_skill_is_rejected_against_injected_catalog(self) -> None:
         report = validate_module_json(
-            (INVALID / "unknown-checkpoint-skill.json").read_text(),
+            (INVALID / "unknown-checkpoint-skill.json").read_text(encoding="utf-8"),
             skill_catalog=DEMO_CHECK_CANDIDATES,
         )
 
@@ -109,7 +113,9 @@ class ModuleValidationTests(unittest.TestCase):
         self.assertEqual(report.errors[0].code, "checkpoint.ref.skill_not_found")
 
     def test_rule_ids_are_unique_across_the_module(self) -> None:
-        payload = json.loads((FIXTURES / "demo-module.json").read_text())
+        payload = json.loads(
+            (FIXTURES / "demo-module.json").read_text(encoding="utf-8")
+        )
         rule = payload["entities"][2]["rules"][0]
         payload["entities"][0]["rules"] = [rule]
 
@@ -119,7 +125,7 @@ class ModuleValidationTests(unittest.TestCase):
 
     def test_multiple_semantic_errors_are_reported_together(self) -> None:
         draft = ModuleDraft.model_validate_json(
-            (INVALID / "multiple-semantic-errors.json").read_text()
+            (INVALID / "multiple-semantic-errors.json").read_text(encoding="utf-8")
         )
 
         report = validate_draft(draft, skill_catalog=DEMO_CHECK_CANDIDATES)
