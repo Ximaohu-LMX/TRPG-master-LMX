@@ -573,10 +573,9 @@ export default function CharacterPage() {
   const [attrInputs, setAttrInputs] = useState<Record<string, string>>({})
   useEffect(() => {
     setAttrInputs(Object.fromEntries(pointBuyAttributes.map(a => [a.key, String(attr[a.key] ?? '')])))
-    // 只在属性项集合变化时重建；单项数值的变化由各自的 onChange 维护，
-    // 否则每敲一个字都会被这里覆盖回去。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pointBuyAttributes])
+    // 输入时只更新 attrInputs，attr 会在失焦或 +/- 后才更新，所以同步 attr
+    // 不会覆盖正在输入的内容；同时能把异步补齐的默认属性显示到输入框里。
+  }, [pointBuyAttributes, attr])
 
   // 只累加「可购买」的其余属性——之前这里用 Object.entries(prev) 把幸运也算了
   // 进去，等于凭空占掉 50 点预算，加点上限实际卡在 430 而不是 480。
