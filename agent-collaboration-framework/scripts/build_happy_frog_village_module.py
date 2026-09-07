@@ -118,6 +118,7 @@ def entity(
     portable: bool = False,
     visibility: str = "public",
     voice_type: str | None = None,
+    aliases: list[str] | None = None,
 ) -> dict[str, Any]:
     """构造不会在运行时任意生成的 Canon Entity。"""
 
@@ -133,6 +134,8 @@ def entity(
         "plot_relevance": True,
         "lifecycle": "session",
     }
+    if aliases:
+        payload["player_visible_aliases"] = aliases
     if visible_when:
         payload["visibility_conditions"] = visible_when
     if portable:
@@ -575,6 +578,24 @@ def build_entities() -> list[dict[str, Any]]:
     """声明稳定目标；最终互动节点由事实或状态控制可见性。"""
 
     return [
+        entity(
+            "richard_lane",
+            "理查德·莱恩",
+            "莱恩先生，詹姆斯的父亲。与妻子在庄园接待调查员，委托他们寻找失踪一周的儿子，并等待调查员回来汇报。",
+            aliases=["莱恩先生", "理查德", "詹姆斯的父亲"],
+            location="lane_manor",
+            kind="npc",
+            voice_type="zh_male_ruyayichen_saturn_bigtts",
+        ),
+        entity(
+            "mrs_lane",
+            "莱恩夫人",
+            "詹姆斯的母亲。与丈夫在庄园等候儿子的消息，向调查员提供寻人委托中公开的情况。",
+            aliases=["莱恩太太", "詹姆斯的母亲"],
+            location="lane_manor",
+            kind="npc",
+            voice_type="zh_female_santongyongns_saturn_bigtts",
+        ),
         entity(
             "lane_commission",
             "莱恩夫妇的委托",
@@ -1420,7 +1441,7 @@ def build_module() -> dict[str, Any]:
     return {
         "content_schema_version": 3,
         "module_id": "happy-frog-village",
-        "version": "3.0.9",
+        "version": "3.0.10",
         "world_ref": "coc-7e",
         "background": (
             "默认采用现代城郊。莱恩夫妇委托调查员寻找失踪的儿子詹姆斯，线索指向"
@@ -1834,6 +1855,7 @@ def review_markdown(module: dict[str, Any], source_map: dict[str, Any]) -> str:
 
 ## 稳定版主线
 
+- 莱恩先生与莱恩夫人是 lane_manor 的公开 NPC，接受询问并在调查员返回时仍在场（#518）。
 - 寻人委托、前期档案/村民调查、埃兹拉警告和度假村多地点调查均有正式目标。
 - 信使笔记与夜间仪式是水晶真相的两条来源；关键失败不会永久关闭主线。
 - 说服、水晶破坏和主动离开分别提交独立 Canon Information，再由 EndingDraft 选择锚点。

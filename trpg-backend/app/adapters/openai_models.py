@@ -207,6 +207,11 @@ keeper_capabilities 时，只能使用 enter_location 与 narrative_only。
   一个 move_entity，把 holder_actor_id 设为 self_actor.id。这样物品才会进入背包。新实体在
   提交前尚不存在，因此 target 必须保持为当前 player_view.scene.id 的 location，绝不能把新
   entity_id 当作 target。
+- NPC 持续随队同行使用公开布尔状态 accompanying：先选适用的 rule_candidates（包括
+  carry/drag/travel 等规则）并由引擎执行其检定；没有匹配规则时，以 NPC 为 target、
+  persistence_intent=character_state 声明 change_entity_state(accompanying=true/false)。
+  玩家想带走不等于 NPC 已经同意，否定不能变成肯定。已随行的 NPC 由 enter_location
+  自动跟到队伍实际到达的位置，不得为随行再追加 move_entity。
 - move_entity：让 NPC/实体换地点，或改变物品 custody。拾取、保留或转交物品时使用
   holder_actor_id；把投掷、放置、丢弃后的物品留在当前场景时使用 location_id。
   玩家拾取、转交、丢下或消费物品时，entity_id 只能取自 player_view.scene.loose_items[].id、
@@ -275,9 +280,8 @@ change_entity_state）；但不要为了内部写入次数把一个意图拆成�
    - `requires_check=false`：用 `NoAdjudicationCheck`。这类选项（例如 `proceed`）
      表示"就这么做"，本来就不掷骰，**不要**为了凑格式编一个技能出来。
    - `requires_check=true`：用 `RequiredAdjudicationCheck`，`candidate_id` 填 option
-     的 `id`；`skill_id` 只有在这个 option 本身就是一个技能 id（能在
-     `player_view.self_actor.skills[]` 里逐字找到）时才填它，否则填该角色实际会用到
-     的那个技能 id。option id 不是技能名，`STR`、`proceed` 这类值不能当技能提交。
+     的 `id`；`skill_id` 使用该 option 的 `check_skill_id`，它是规则声明的技能或属性。
+     option id 不是技能名，不得将 proceed 等不透明 id 当作技能或自选另一个技能。
 4. `success_effects` 与 `failure_effects` **一律留空**。点名一条规则就等于把后果的
    所有权交给了它：规则自己拥有检定结果与状态变更，你另外写的效果会被忽略。
 

@@ -32,7 +32,6 @@ from collaboration_framework.contracts import (
     GetAdjudicationStatusRequest,
     HostTurnDecision,
     KeeperCapabilityView,
-    MoveEntityEffect,
     NarrativeOnlyEffect,
     NoAdjudicationCheck,
     PlayerInput,
@@ -477,24 +476,6 @@ class DeterministicHostTurnDecisionModel:
         if compact is not None:
             return compact
 
-        destination = _match_travel_target(context.player_view, utterance)
-        if destination is not None:
-            return SingleActionDecision(
-                adjudication=ActionAdjudication(
-                    request_id="application-owned",
-                    source_revision=context.player_view.revision,
-                    actor_id=context.player_input.actor_id,
-                    summary=utterance,
-                    target=ActionTarget(
-                        kind="location",
-                        id=destination.id,
-                    ),
-                    method=ActionMethod(family="travel", description=utterance),
-                    check=NoAdjudicationCheck(),
-                    success_effects=(EnterLocationEffect(location_id=destination.id),),
-                )
-            )
-
         # A single action uses the same player-safe Rule Match View as a plan
         # step.  Without this bridge, the Fake planner returned narrative_only
         # for every non-travel utterance, so CI could exercise v3 rules only by
@@ -508,7 +489,9 @@ class DeterministicHostTurnDecisionModel:
                 step_request_id="application-owned",
                 step=ActionPlanStep(
                     kind=(
-                        "dialogue"
+                        "travel"
+                        if _match_travel_target(context.player_view, utterance) is not None
+                        else "dialogue"
                         if any(word in utterance for word in ("问", "交谈", "聊天"))
                         else "action"
                     ),
@@ -1200,7 +1183,7 @@ class ActionPlanTurnApplication:
                 player_input=player_input,
                 player_view=view,
             )
-        if use_semantic_planner:
+        if use_semantic_planner and isinstance(self._planner, DeterministicHostTurnDecisionModel):
             latest_view = await self._projector.project(player_input)
             assert isinstance(decision, ActionPlan)
             prerequisite = self._prerequisite_resolver.resolve(
@@ -1223,7 +1206,7 @@ class ActionPlanTurnApplication:
                     player_view=latest_view,
                 )
             decision = prerequisite.plan
-        else:
+        elif isinstance(self._planner, DeterministicHostTurnDecisionModel):
             decision = _normalize_single_travel_decision(
                 decision,
                 player_input=player_input,
@@ -2575,7 +2558,7 @@ def build_action_plan_turn_application(
                 retry_policy=model_client_retry_policy(resolved),
             )
         planner = PromptHostTurnDecisionModel(client, policy=policy)
-        adjudicator = _RuleFirstStepAdjudicator(PromptActionPlanStepAdjudicator(client))
+        adjudicator = _ModelStepAdjudicator(PromptActionPlanStepAdjudicator(client))
         narration_model = PromptActionPlanNarrationModel(client)
 
     # 生产回合始终使用玩家安全 Planner；灰度比例仅保留为兼容配置，不再允许
@@ -2694,25 +2677,18 @@ class _DeterministicStepAdjudicator:
         return adjudication
 
 
-class _RuleFirstStepAdjudicator:
-    """Resolve unambiguous Match View steps without a fallible model round-trip."""
+class _ModelStepAdjudicator:
+    """Let the production model interpret every step before engine validation.
+
+    Keyword matching belongs to the Fake provider. In particular, a travel
+    step can first require a character-state rule, and a negated request must
+    never become an unconditional move.
+    """
 
     def __init__(self, fallback: ActionPlanStepAdjudicator) -> None:
         self._fallback = fallback
 
     async def adjudicate(self, context: ActionPlanStepContext) -> ActionAdjudication:
-        adjudication = _deterministic_step_adjudication(context)
-        if adjudication is not None:
-            _log_step_adjudicator_path(
-                context,
-                adjudication,
-                path="rule_first" if adjudication.rule_decision is not None else "deterministic",
-            )
-            return adjudication
-        _log_deterministic_adjudication_miss(
-            context,
-            reason=_deterministic_adjudication_miss_reason(context),
-        )
         adjudication = await self._fallback.adjudicate(context)
         _log_step_adjudicator_path(
             context,
@@ -2721,6 +2697,7 @@ class _RuleFirstStepAdjudicator:
         )
         if (
             context.step.kind == "travel"
+            and adjudication.rule_decision is None
             and _explicit_travel_phrase(context.player_input.utterance) is not None
             and _has_unmatched_explicit_travel_destination(
                 context.player_view,
@@ -2844,10 +2821,56 @@ def _deterministic_adjudication_miss_reason(context: ActionPlanStepContext) -> s
     return "adjudication_policy_fallback"
 
 
+def _fake_rule_adjudication(context: ActionPlanStepContext) -> ActionAdjudication | None:
+    """Offline matching only; production uses the model with the same candidates."""
+
+    action_text = context.step.semantic_goal.replace(
+        context.player_view.scene.name,
+        "",
+    ).strip(" ，,。")
+    target = _match_visible_entity(context.player_view, action_text)
+    if (
+        target is None
+        and context.step.kind == "dialogue"
+        and context.player_input.interlocutor_id is not None
+    ):
+        target = next(
+            (
+                entity
+                for entity in context.player_view.scene.visible_entities
+                if entity.id == context.player_input.interlocutor_id
+            ),
+            None,
+        )
+    candidate, option = _match_rule_candidate(
+        context.keeper_capabilities,
+        action_text,
+        target.id if target is not None else None,
+    )
+    if candidate is None or option is None or context.keeper_capabilities is None:
+        return None
+    return build_rule_once_adjudication(
+        player_input=context.player_input.model_copy(
+            update={"client_action_id": context.step_request_id},
+        ),
+        player_view=context.player_view,
+        capabilities=context.keeper_capabilities,
+        rule_id=candidate.rule_id,
+        option_id=option.id,
+        summary=context.step.semantic_goal,
+    )
+
+
 def _deterministic_step_adjudication(
     context: ActionPlanStepContext,
 ) -> ActionAdjudication | None:
-    """Return only decisions fully implied by the current player-safe view."""
+    """Conservative offline stand-in; never used to decide production steps."""
+
+    if any(word in context.step.semantic_goal for word in ("不要", "别再", "不想", "不带", "不让")):
+        return None
+    rule = _fake_rule_adjudication(context)
+    if rule is not None:
+        return rule
 
     if context.step.kind in {"wait", "rest"}:
         time = context.keeper_capabilities.time if context.keeper_capabilities else None
@@ -2908,13 +2931,6 @@ def _deterministic_step_adjudication(
                 success_effects=(NarrativeOnlyEffect(),),
             )
         destination_id = destination.id
-        companion_moves = _companion_move_effects(
-            player_input=context.player_input,
-            semantic_text=context.step.semantic_goal,
-            view=context.player_view,
-            capabilities=context.keeper_capabilities,
-            destination_id=destination_id,
-        )
         return ActionAdjudication(
             request_id=context.step_request_id,
             source_revision=context.player_view.revision,
@@ -2926,10 +2942,7 @@ def _deterministic_step_adjudication(
                 description=context.step.semantic_goal,
             ),
             check=NoAdjudicationCheck(),
-            success_effects=(
-                EnterLocationEffect(location_id=destination_id),
-                *companion_moves,
-            ),
+            success_effects=(EnterLocationEffect(location_id=destination_id),),
         )
 
     action_text = context.step.semantic_goal.replace(
@@ -2950,65 +2963,6 @@ def _deterministic_step_adjudication(
             ),
             None,
         )
-    candidate, option = _match_rule_candidate(
-        context.keeper_capabilities,
-        action_text,
-        target.id if target is not None else None,
-    )
-    if candidate is not None and option is not None:
-        target_kind = (
-            candidate.target_kinds[0]
-            if candidate.target_kinds
-            else "entity"
-            if target is not None
-            else "location"
-        )
-        # 不掷骰的分支（例如 proceed）不能为了凑格式编一个技能出来：option id
-        # 不是技能名，`proceed` / `STR` 提交上去会被 Ruleset 快照拒绝。带检定的
-        # 分支才沿用 option id 作技能，Engine 仍会再校验一次。
-        check = (
-            RequiredAdjudicationCheck(
-                candidates=(
-                    SkillCheckCandidate(
-                        candidate_id=option.id,
-                        skill_id=option.id,
-                        difficulty="regular",
-                        method_summary=context.step.semantic_goal,
-                        player_safe_reason="使用当前地点公开的检定方式",
-                    ),
-                )
-            )
-            if option.requires_check
-            else NoAdjudicationCheck()
-        )
-        return ActionAdjudication(
-            request_id=context.step_request_id,
-            source_revision=context.player_view.revision,
-            actor_id=context.player_input.actor_id,
-            summary=context.step.semantic_goal,
-            target=ActionTarget(
-                kind=target_kind,
-                id=(
-                    candidate.target_ids[0]
-                    if candidate.target_ids
-                    else target.id
-                    if target is not None
-                    else context.player_view.scene.id
-                ),
-            ),
-            method=ActionMethod(
-                family=(
-                    candidate.action_families[0] if candidate.action_families else context.step.kind
-                ),
-                description=context.step.semantic_goal,
-            ),
-            rule_decision=RuleDecisionRef(rule_id=candidate.rule_id, option_id=option.id),
-            check=check,
-            # Effects belong to the rule (#226 §5), not to this stand-in.
-            success_effects=(),
-            failure_effects=(),
-        )
-
     if target is None and _is_public_observation_goal(action_text):
         # Pure observation with no named target has no safe effect, check, or
         # hidden fact to adjudicate. Keep it on the current scene and let the
@@ -3134,33 +3088,6 @@ def _requires_mixed_dialogue_clarification(player_input: PlayerInput) -> bool:
     )
 
 
-def _companion_move_effects(
-    *,
-    player_input: PlayerInput,
-    semantic_text: str,
-    view: PlayerView,
-    capabilities: KeeperCapabilityView | None,
-    destination_id: str,
-) -> tuple[MoveEntityEffect, ...]:
-    """把玩家明确要求同行、且当前就在身边的 NPC 一并移动到目的地。"""
-
-    effects = []
-    for entity in _requested_companions(
-        player_input=player_input,
-        semantic_text=semantic_text,
-        capabilities=capabilities,
-    ):
-        if entity.location_id != view.scene.id:
-            continue
-        effects.append(
-            MoveEntityEffect(
-                entity_id=entity.id,
-                location_id=destination_id,
-            )
-        )
-    return tuple(effects)
-
-
 def _requested_companions(
     *,
     player_input: PlayerInput,
@@ -3194,7 +3121,7 @@ def _normalize_single_travel_decision(
     view: PlayerView,
     capabilities: KeeperCapabilityView | None,
 ) -> HostTurnDecision:
-    """让单动作旅行服从玩家原话，并补齐明确同行 NPC 的权威移动效果。"""
+    """Fake 单动作旅行使用明确目的地；随行只由引擎处理。"""
 
     if not isinstance(decision, SingleActionDecision):
         return decision
@@ -3317,27 +3244,11 @@ def _normalize_single_travel_decision(
                 ),
             ),
         )
-    companion_moves = _companion_move_effects(
-        player_input=player_input,
-        semantic_text=semantic_text,
-        view=view,
-        capabilities=capabilities,
-        destination_id=destination_id,
-    )
-    companion_ids = {effect.entity_id for effect in companion_moves}
     effects = tuple(
         EnterLocationEffect(location_id=destination_id)
         if isinstance(effect, EnterLocationEffect)
-        else MoveEntityEffect(entity_id=effect.entity_id, location_id=destination_id)
-        if isinstance(effect, MoveEntityEffect) and effect.entity_id in companion_ids
         else effect
         for effect in adjudication.success_effects
-    )
-    existing_moves = {
-        effect.entity_id for effect in effects if isinstance(effect, MoveEntityEffect)
-    }
-    missing_companion_moves = tuple(
-        effect for effect in companion_moves if effect.entity_id not in existing_moves
     )
     normalized = adjudication.model_copy(
         update={
@@ -3349,7 +3260,7 @@ def _normalize_single_travel_decision(
                 else ActionTarget(kind="location", id=destination_id)
             ),
             "persistence_intent": "location",
-            "success_effects": (*effects, *missing_companion_moves),
+            "success_effects": effects,
         },
         deep=True,
     )

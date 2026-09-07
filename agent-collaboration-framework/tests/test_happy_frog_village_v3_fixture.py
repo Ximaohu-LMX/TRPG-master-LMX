@@ -110,7 +110,7 @@ def initial_state():
 
 class HappyFrogContentGateTests(unittest.TestCase):
     def test_all_npcs_have_stable_doubao_voice_profiles(self) -> None:
-        """幸福蛙蛙村的 7 个 NPC 均配置同一资源包下的专属音色。"""
+        """幸福蛙蛙村的 NPC 均配置同一资源包下的专属音色。"""
 
         content = load_module()
         profiles = {
@@ -119,6 +119,8 @@ class HappyFrogContentGateTests(unittest.TestCase):
             if entity.kind == "npc"
         }
         expected_ids = {
+            "richard_lane",
+            "mrs_lane",
             "villager_accounts",
             "ezra",
             "messenger",

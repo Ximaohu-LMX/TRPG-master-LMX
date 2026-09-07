@@ -379,6 +379,24 @@ class AccompanyingEntitiesTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.placed_at(store, "melodias"))
 
     # --- 主持人看得见、也说得出 ---------------------------------------------- #
+    async def test_initial_following_state_is_public_without_exposing_private_keys(
+        self,
+    ) -> None:
+        store, _engine, rules = self.build(
+            entities={"thomas": {ACCOMPANYING: True, "secret_affiliation": "hidden"}},
+        )
+        self.assertEqual(store.inspect_state(ROOM).public_entity_state_keys, {})
+        view = await rules.read(
+            PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
+        )
+        thomas = next(
+            entity for entity in view.scene.visible_entities if entity.id == "thomas"
+        )
+        self.assertEqual(
+            {value.key: value.value for value in thomas.observable_state},
+            {ACCOMPANYING: True},
+        )
+
     async def test_the_mark_is_visible_to_the_agent(self) -> None:
         """随行是玩家当场就看得见的事，主持人也必须读得到。
 

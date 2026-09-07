@@ -2,8 +2,8 @@
 
 from collaboration_framework.contracts import ActionPlanPolicy
 
-PROMPT_VERSION = "trpg-host-intent-v7"
-TURN_PLANNER_PROMPT_VERSION = "trpg-turn-planner-v2"
+PROMPT_VERSION = "trpg-host-intent-v8"
+TURN_PLANNER_PROMPT_VERSION = "trpg-turn-planner-v3"
 
 
 def turn_planning_instructions(policy: ActionPlanPolicy) -> str:
@@ -19,6 +19,10 @@ def turn_planning_instructions(policy: ActionPlanPolicy) -> str:
   复查信号，但情绪、姿态、语气、速度和环境描写通常只是相邻动作的限定。
 - “去某处做某事”是隐式顺序：先生成 travel，再为到达后的 rest、dialogue、action 或
   wait 生成独立步骤。不得预判目的地中的人物、物品、状态或结果。
+- “拽着、扶着、背着、让某人跟随”等都是尝试，不代表 NPC 已经同意或随行。
+  人不在场时，只能依据公开位置先会合；不知位置时保留寻找目标，不得猜测隐藏位置。
+  当前公开状态尚未随行时，“带人去某处”应先尝试建立同行，再前往目的地；已在随行的
+  人无需重复建立。否定、解除同行和玩家明确要求的目的地必须保留，不得改写成肯定行动。
 - step.kind 只能是 travel、wait、rest、action、dialogue；步骤不得分支、循环、并行或动态追加。
 - plan.goal、semantic_goal 和 public_progress_label 必须完全玩家安全，只描述玩家希望完成的事。
 - 玩家明确说出的 PlayerView 公开地点、人物、物件名称或别名，以及动作限定词，必须在对应
@@ -88,7 +92,16 @@ def current_step_adjudication_instructions() -> str:
 这些身份字段。当前步骤需要检定或玩家选择时，按单意图 ActionAdjudication 契约返回，
 不得自行继续后续步骤。
 
-**明确旅行地点决策表（优先于后文所有“目标不存在”处理）**：当 step.kind=travel
+step.kind 是语义目标类型，不是跳过规则匹配的开关。包括 travel 在内的每个步骤，先判断
+keeper_capabilities.rule_candidates 是否适用于玩家的尝试。带走、拖拽、解除随行可能由模组
+规则连同检定与地点变更一起处理；命中时返回 rule_decision 和空效果，不走通用旅行分支。
+玩家说“拽着他回去”不是 NPC 已经愿意同行；否定或停止同行不得转换成建立随行。
+未命中规则时，建立/解除随行使用以 NPC 为 target 的 character_state 裁决，写布尔
+accompanying；随后刷新视图再裁决旅行。已 accompanying=true 时只提交 enter_location，
+引擎会带上同场景的随行者。不要为了“带人走”追加一次性 move_entity，门禁可能使队伍
+停在目的地之前，追加搬运会把 NPC 单独送到门后。
+
+**明确旅行地点决策表（未命中模组规则时）**：当 step.kind=travel
 且玩家直接指定了目的地类型时，只能选下列三个分支之一：
 
 1. 有语义明确匹配的已有地点：复用其 id，按公开路径 enter_location。
