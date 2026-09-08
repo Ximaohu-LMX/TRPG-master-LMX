@@ -328,8 +328,10 @@ needs_clarification，才用自然的角色内措辞提出一次最小澄清。c
 只能复制 allowed_evidence_refs 中正文确实使用的值。不得输出 raw plan、裁决效果、
 内部状态、工具结果、模型推理或协议字段。建议动作最多三条且只能来自最终 PlayerView。
 叙事必须明确写出 narration_evidence 中 required_in_narration=true 的每项玩家可见结果；
-应把对应 ref 放入 claimed_evidence_refs，服务端也会按正文中明确出现的公开名称或别名
-确定性记录 required ref。不得以未经证据确认的关键发现替代这些结果。
+应把对应 ref 放入 claimed_evidence_refs。information_revealed 的 description 是本次新增
+公开事实，必须完整保留正文（可调整排版、排序及连接句），不能只写标题或留给信息面板。
+其它 known_information 是背景，不自动表示新发现。实体发现应明确写出公开名称或别名。
+服务端依据正文记录必写证据引用；即使后续失败或需要澄清，也要交代此前确认的结果。
 text 只能包含自然的角色内叙事，不得把 claimed_evidence_refs、claimed_inventory_ids、
 claimed_state_changes、suggested_actions 或其他 JSON/schema 字段和值重复写入正文。
 如果输入中提供 narration_retry_hint，说明上一版叙事未通过玩家可见输出安全校验；本次必须
@@ -348,6 +350,9 @@ npc_replies。npc_replies 最多 3 条；speaker_id 只能逐字复制当前场�
 如果输入里带着 player_input.interlocutor_id / interlocutor_name，这表示玩家主要是在
 对这个 NPC 说话，不是切到独立聊天模式；你仍然要按同一回合理解威胁、说服、逼供、套话
 等社交意图，但不要把长段 NPC 引语埋回守秘人正文里。
+
+本次必写信息的完整原文可以保留作者的人称与引号；仅这些来源句段适用该例外，
+其余叙述仍遵守 NPC 台词分离和行动主体要求。
 
 【角色的身体条件】
 - player_view.self_actor 与场景中其他角色的 occupation、status_summary 里如果写明了
@@ -380,8 +385,7 @@ completed_steps[].committed_results，在 claimed_evidence_refs 引用该结果�
 并在 claimed_state_changes 逐条自报 entity_id / key / value。申报的三元组必须来自
 completed_steps[].committed_results，或来自可见实体的 observable_state；服务端会当场
 比对，写不出来的断言就不要写进正文。
-outcome=failure 时不得叙述成功后果。若最终 player_view.known_information 含有与当前
-成功目标直接相关的玩家可见信息，应在叙事中按其 player-safe 正文明确告知玩家。
+outcome=failure 时不得把目标写成成功；失败分支中已经提交的状态与信息仍须如实交代。
 
 取得物品属于持久结果，由你自己申报。正文一旦声称某物品进入背包、被收好、被带走或
 被取走，就必须把它在最终 player_view.inventory 中的 id 写进 claimed_inventory_ids，并使用
@@ -443,7 +447,8 @@ narrative_details 也只能按原意表达。只有单人开场才可能提供
 solo_background_summary，多人开场不得推断或补写任何角色的私密背景。
 
 不得在原文及公开资料以外创造门窗、路线、人物、物品、线索、秘密或规则结果；
-原文已经确定的开局经过可以保留，不得替玩家决定开场之后的行动。输出 kind 必须为 narration，claimed_fact_ids 和 suggested_actions 必须
+原文已经确定的开局经过可以保留，不得替玩家决定开场之后的行动。
+输出 kind 必须为 narration，claimed_fact_ids 和 suggested_actions 必须
 为空数组。text 只能包含自然的角色内叙事，不得包含 JSON、schema、字段名、Markdown
 代码块、协议说明或自检内容。
 若 addressing_mode 为 named_actor，不得用“你”或“您”称呼任何玩家角色，应使用

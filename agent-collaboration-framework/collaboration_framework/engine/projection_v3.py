@@ -497,10 +497,10 @@ def _known_information(
     for item in module.information:
         if not _override_allows(state, actor_id, "information", item.id):
             continue
-        if item.discovery.initial == "known":
-            scope = item.discovery.scope
-        elif item.id in party:
+        if item.id in party:
             scope = "party"
+        elif item.discovery.initial == "known":
+            scope = item.discovery.scope
         elif item.id in mine:
             scope = "actor"
         else:
@@ -520,6 +520,30 @@ def _known_information(
             )
         )
     return tuple(projected)
+
+
+def public_known_information(
+    module: ModuleContentV3, state: GameState
+) -> tuple[ProjectionKnownInformation, ...]:
+    """Facts shareable in room narration, respecting every bound actor's visibility.
+
+    Personal knowledge is never promoted to a public result merely because the
+    acting player can see it. Uses the same projection as the player information panel.
+    """
+    actor_ids = tuple(key for key, actor in state.actors.items() if actor.player_id)
+    if not actor_ids:
+        return ()
+    views = [
+        {
+            item.id: item
+            for item in _known_information(module, state, actor_id)
+            if item.scope == "party"
+        }
+        for actor_id in actor_ids
+    ]
+    return tuple(
+        item for key, item in views[0].items() if all(key in view for view in views)
+    )
 
 
 def _override_allows(

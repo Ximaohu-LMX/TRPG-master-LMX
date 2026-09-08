@@ -679,7 +679,7 @@ def build_entities() -> list[dict[str, Any]]:
                 # 引擎保留键：为 True 时詹姆斯跟着队伍换场景，模组不必在每一条
                 # 移动规则里重复 move_entity（#516）。
                 "accompanying": False,
-                "alive": True,
+                "consciousness": "conscious",
             },
         ),
         entity(
@@ -964,7 +964,7 @@ def build_rules() -> list[dict[str, Any]]:
                     "holder_actor_id": None,
                 },
                 {"type": "enter_location", "location_id": "outside"},
-                set_state("james", "alive", False),
+                set_state("james", "consciousness", "dead"),
                 reveal("james_forced_removal_tragedy"),
                 {"type": "mark_core_resolved"},
                 {"type": "set_ending_availability", "available": True},

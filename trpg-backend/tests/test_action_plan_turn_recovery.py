@@ -211,6 +211,7 @@ def test_clarification_fallback_points_to_visible_dead_body() -> None:
             scene=SimpleNamespace(
                 visible_entities=(
                     SimpleNamespace(
+                        id="melodias",
                         name="梅洛迪亚斯·杰弗逊",
                         observable_state=(SimpleNamespace(key="consciousness", value="dead"),),
                     ),
@@ -753,8 +754,8 @@ async def test_required_evidence_fallback_never_changes_clarification_scope() ->
     narration = await application._narrate(context)
 
     assert narration.kind == "clarification"
-    assert evidence.subject_name not in narration.text
-    assert narration.claimed_evidence_refs == ()
+    assert evidence.subject_name in narration.text
+    assert narration.claimed_evidence_refs == (evidence.ref,)
     assert narrate.await_count == 2
 
 
@@ -828,3 +829,30 @@ async def test_cancel_retry_reconciles_resolved_engine_after_crash_before_plan_w
     assert engine.post_roll_requests == []
     assert len(orchestrator.resume_calls) == 1
     assert orchestrator.resume_calls[0]["parent_action_id"] == run.parent_action_id
+
+
+@pytest.mark.parametrize("last_error", ["atmosphere_repeat", "outer_schema", "structured"])
+@pytest.mark.parametrize("status", ["resolved", "needs_clarification"])
+async def test_confirmed_information_survives_retry_exhaustion(last_error, status):
+    evidence = NarrationEvidence(
+        ref="evt-information",
+        kind="information_revealed",
+        subject_id="refusal",
+        subject_name="拒绝离开",
+        description="你听见明确的答复：“今晚不能离开，必须等到明天。”",
+        required_in_narration=True,
+    )
+    errors = [ActionPlanNarrationValidationError("required_evidence_missing")]
+    errors.append(
+        StructuredOutputError("invalid")
+        if last_error == "structured"
+        else ActionPlanNarrationValidationError(last_error)
+    )
+    app = object.__new__(ActionPlanTurnApplication)
+    app._narrator = SimpleNamespace(narrate=AsyncMock(side_effect=errors))
+    context = cast(ActionPlanNarrationContext, _NarrationContextStub(evidence, status))
+    output = await app._narrate(context)
+    assert evidence.description in output.text
+    assert output.claimed_evidence_refs == (evidence.ref,)
+    assert output.kind == ("clarification" if status == "needs_clarification" else "narration")
+    assert app._narrator.narrate.await_count == 2

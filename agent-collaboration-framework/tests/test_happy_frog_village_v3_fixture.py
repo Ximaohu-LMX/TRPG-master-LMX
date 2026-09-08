@@ -432,7 +432,7 @@ class HappyFrogRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(finished.entities["james"]["under_forced_custody"], False)
         self.assertIs(finished.entities["james"]["accompanying"], False)
         await self.move("outside")
-        self.assertIs(self.store.inspect_state(ROOM).entities["james"]["alive"], True)
+        self.assertEqual(self.store.inspect_state(ROOM).entities["james"]["consciousness"], "conscious")
 
     async def test_retrieved_crystal_path_breaks_core(self) -> None:
         await self.reach_reception()
@@ -522,7 +522,7 @@ class HappyFrogRuntimeTests(unittest.IsolatedAsyncioTestCase):
         player_view = await PlayerViewProjector(self.rules).project(player_input)
         narration = await ActionPlanNarrator(
             _StaticNarrationModel(
-                "水晶碎裂后，覆盖度假村的微光与雾气开始消散。",
+                "水晶碎裂后，覆盖度假村的微光与雾气开始消散。" + "".join(item.description for item in execution.narration_evidence),
                 (broken_result.event_ref,),
             )
         ).narrate(
@@ -549,7 +549,7 @@ class HappyFrogRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             narration.text,
-            "水晶碎裂后，覆盖度假村的微光与雾气开始消散。",
+            "水晶碎裂后，覆盖度假村的微光与雾气开始消散。" + "".join(item.description for item in execution.narration_evidence),
         )
 
         finished = self.store.inspect_state(ROOM)
@@ -573,7 +573,7 @@ class HappyFrogRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "released": False,
                 "under_forced_custody": False,
                 "accompanying": False,
-                "alive": True,
+                "consciousness": "conscious",
             },
         )
 
@@ -587,7 +587,7 @@ class HappyFrogRuntimeTests(unittest.IsolatedAsyncioTestCase):
         restrained = self.store.inspect_state(ROOM).entities["james"]
         self.assertIs(restrained["under_forced_custody"], True)
         self.assertIs(restrained["accompanying"], False)
-        self.assertIs(restrained["alive"], True)
+        self.assertEqual(restrained["consciousness"], "conscious")
         self.assertEqual(self.store.inspect_state(ROOM).scene_id, "resort_reception")
         self.assertFalse(self.store.inspect_state(ROOM).core_resolved)
         self.assertFalse(self.store.inspect_state(ROOM).ending_available)
@@ -696,7 +696,7 @@ class HappyFrogRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_forcing_unreleased_james_out_commits_tragic_ending(self) -> None:
         await self.reach_reception()
-        await self.choose(
+        execution = await self.choose(
             "force_james_out_of_resort",
             "force-james-out",
             "force",
@@ -711,8 +711,23 @@ class HappyFrogRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(finished.entities["james"]["under_forced_custody"], True)
         self.assertIs(finished.entities["james"]["accompanying"], True)
         self.assertEqual(finished.entities["james"]["location_id"], "outside")
-        self.assertIs(finished.entities["james"]["alive"], False)
+        self.assertEqual(finished.entities["james"]["consciousness"], "dead")
         self.assertIn("james_forced_removal_tragedy", finished.discovered_facts)
+        self.assertTrue(any(
+            result.target_id == "james" and result.state_key == "consciousness"
+            and result.state_value == "dead" for result in execution.committed_results
+        ))
+        fact = next(item for item in execution.narration_evidence
+                    if item.subject_id == "james_forced_removal_tragedy")
+        self.assertEqual(fact.kind, "information_revealed")
+        self.assertEqual(fact.description, next(item.player_content for item in self.content.information
+                                               if item.id == fact.subject_id))
+        view = await PlayerViewProjector(self.rules).project_scope(
+            PlayerViewScope(room_id=ROOM, player_id=PLAYER, actor_id=ACTOR)
+        )
+        james = next(entity for entity in view.scene.visible_entities if entity.id == "james")
+        self.assertTrue(any(state.key == "consciousness" and state.value == "dead"
+                            for state in james.observable_state))
         self.assertNotIn("james_returns_home", finished.discovered_facts)
         self.assertNotIn("escaped_unresolved", finished.discovered_facts)
 
@@ -886,7 +901,7 @@ class HappyFrogRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         finished = self.store.inspect_state(ROOM)
         self.assertEqual(finished.scene_id, "outside")
-        self.assertIs(finished.entities["james"]["alive"], True)
+        self.assertEqual(finished.entities["james"]["consciousness"], "conscious")
         self.assertNotIn("james_forced_removal_tragedy", finished.discovered_facts)
 
     async def test_multiplayer_start_publishes_only_local_rule_candidates(self) -> None:

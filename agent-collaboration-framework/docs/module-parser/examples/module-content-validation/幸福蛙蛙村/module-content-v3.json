@@ -1210,7 +1210,7 @@
         "released": false,
         "under_forced_custody": false,
         "accompanying": false,
-        "alive": true
+        "consciousness": "conscious"
       },
       "item_component": null,
       "voice": {
@@ -3296,8 +3296,8 @@
             "effect": {
               "type": "change_entity_state",
               "entity_id": "james",
-              "key": "alive",
-              "value": false
+              "key": "consciousness",
+              "value": "dead"
             },
             "next_step_id": "effect_5"
           },

@@ -2021,21 +2021,7 @@ class ActionPlanTurnApplication:
                             duration_ms=int((time.monotonic() - started_at) * 1000),
                         )
                         return self._ensure_interlocutor_reply(context, degraded)
-                    if (
-                        exc.reason == "required_evidence_missing"
-                        and context.termination_status != "needs_clarification"
-                    ):
-                        logger.info(
-                            "action_plan_narration_required_evidence_fallback",
-                            evidence_refs=[
-                                item.ref
-                                for item in context.narration_evidence
-                                if item.required_in_narration
-                            ],
-                        )
-                        narration = self._required_evidence_fallback(context)
-                    else:
-                        narration = self._deterministic_narration_fallback(context)
+                    narration = self._deterministic_narration_fallback(context)
                     logger.info(
                         "action_plan_narration_completed",
                         action=context.player_input.client_action_id[:12],
@@ -2166,6 +2152,9 @@ class ActionPlanTurnApplication:
         sentences: list[str] = []
         addressing_mode = getattr(context, "addressing_mode", "second_person")
         for item in required:
+            if item.kind == "information_revealed":
+                sentences.append(item.description)
+                continue
             sentences.append(
                 f"随着调查深入，{_acting_address(context)}很快辨认出{item.subject_name}。"
             )
@@ -2191,6 +2180,7 @@ class ActionPlanTurnApplication:
     ) -> ActionPlanNarrationOutput:
         """只复述结构化已提交结果，绝不从 semantic_goal 推断持久后果。"""
 
+        clarification_text = None
         if context.termination_status == "needs_clarification":
             visible_dead = tuple(
                 entity
@@ -2204,17 +2194,12 @@ class ActionPlanTurnApplication:
                 word in context.player_input.utterance for word in ("尸体", "遗体")
             ):
                 names = "、".join(entity.name for entity in visible_dead)
-                return ActionPlanNarrationOutput(
-                    kind="clarification",
-                    text=(
-                        f"{names}的尸体就在当前场景中。"
-                        f"{_acting_address(context)}是想检查尸体、搜查随身物品，还是处理现场？"
-                    ),
+                clarification_text = (
+                    f"{names}的尸体就在当前场景中。"
+                    f"{_acting_address(context)}是想检查尸体、搜查随身物品，还是处理现场？"
                 )
-            return ActionPlanNarrationOutput(
-                kind="clarification",
-                text=_deterministic_clarification_text(context),
-            )
+            else:
+                clarification_text = _deterministic_clarification_text(context)
         labels = {
             ("consciousness", "unconscious"): "失去了意识",
             ("consciousness", "dead"): "已经死亡",
@@ -2255,6 +2240,16 @@ class ActionPlanTurnApplication:
             for result, label in results
             if label is not None or result in inventory_results
         )
+        if any(item.required_in_narration for item in getattr(context, "narration_evidence", ())):
+            required_output = ActionPlanTurnApplication._required_evidence_fallback(context)
+            statements.append(required_output.text)
+            refs = tuple(dict.fromkeys((*refs, *required_output.claimed_evidence_refs)))
+        if clarification_text is not None:
+            return ActionPlanNarrationOutput(
+                kind="clarification",
+                text="\n".join((*statements, clarification_text)),
+                claimed_evidence_refs=refs,
+            )
         outcomes = tuple(step.outcome for step in context.completed_steps)
         if "cancelled" in outcomes or context.termination_status == "cancelled":
             status_text = "这次行动已经取消。"
@@ -2263,6 +2258,8 @@ class ActionPlanTurnApplication:
             status_text = (
                 "当前步骤未能成功；此前已经完成的步骤仍然保留。"
                 if "success" in outcomes
+                else "这次行动未能成功。"
+                if statements
                 else "这次行动未能成功，局面没有产生当前可确认的新结果。"
             )
         else:

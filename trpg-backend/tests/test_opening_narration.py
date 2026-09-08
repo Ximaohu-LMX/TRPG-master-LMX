@@ -264,6 +264,7 @@ async def test_opening_reads_authored_source_from_bound_module(mode, outcome):
         store, engine, settings=Settings(opening_narration_mode=mode), opening_narration_model=model
     )
     result = await app.generate_opening(view)
+    assert module.opening_text is not None
     assert result.narration.text.startswith(module.opening_text)
     assert "杜明" in result.narration.text
     assert result.result == ("template" if mode == "template" else "fallback")

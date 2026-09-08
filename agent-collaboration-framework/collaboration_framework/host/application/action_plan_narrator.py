@@ -139,9 +139,14 @@ class ActionPlanNarrator:
         mentioned_required = tuple(
             item
             for item in required
-            if any(
-                label and label in output.text
-                for label in (item.subject_name, *item.subject_aliases)
+            if (
+                bool(item.description.strip())
+                and _source_pattern(item.description).search(output.text) is not None
+                if item.kind == "information_revealed"
+                else any(
+                    label and label in output.text
+                    for label in (item.subject_name, *item.subject_aliases)
+                )
             )
         )
         if len(mentioned_required) != len(required):
@@ -152,7 +157,10 @@ class ActionPlanNarrator:
         # omitted a bookkeeping field.
         claimed = tuple(
             dict.fromkeys(
-                (*output.claimed_evidence_refs, *(item.ref for item in mentioned_required))
+                (
+                    *output.claimed_evidence_refs,
+                    *(item.ref for item in mentioned_required),
+                )
             )
         )
         if claimed != output.claimed_evidence_refs:
@@ -160,20 +168,28 @@ class ActionPlanNarrator:
         rejection = narration_text_rejection_reason(output.text)
         if rejection is not None:
             raise ActionPlanNarrationValidationError(rejection)
-        if output.npc_replies and _EMBEDDED_DIALOGUE_RE.search(output.text):
+        # Match server-provided complete source bodies; never trust model source labels.
+        # Masking preserves offsets for sentence-level degradation of free prose.
+        free_text = output.text
+        for item in mentioned_required:
+            if item.kind == "information_revealed":
+                free_text = _source_pattern(item.description).sub(
+                    lambda match: " " * len(match.group()), free_text
+                )
+        if output.npc_replies and _EMBEDDED_DIALOGUE_RE.search(free_text):
             raise ActionPlanNarrationValidationError(
                 "npc_dialogue_embedded_in_text",
                 output=output,
-                offending_spans=_quoted_sentence_spans(output.text),
+                offending_spans=_quoted_sentence_spans(free_text),
             )
         subject_rejection = narration_subject_rejection_reason(
-            output.text,
+            free_text,
             addressing_mode=getattr(context, "addressing_mode", "second_person"),
         )
         if subject_rejection is not None:
             raise ActionPlanNarrationValidationError(subject_rejection)
         atmosphere_rejection = narration_atmosphere_rejection_reason(
-            output.text,
+            free_text,
             getattr(context, "previous_published_narration", None),
         )
         if atmosphere_rejection is not None:
@@ -224,6 +240,13 @@ class ActionPlanNarrator:
         ):
             raise ActionPlanNarrationValidationError("clarification_kind")
         return output
+
+
+def _source_pattern(body: str) -> re.Pattern[str]:
+    """Allow layout whitespace only; retain punctuation, negation and quantities."""
+    return re.compile(
+        r"\s*".join(re.escape(char) for char in body if not char.isspace())
+    )
 
 
 def _schema_error_fields(exc: Exception) -> tuple[str, ...]:
