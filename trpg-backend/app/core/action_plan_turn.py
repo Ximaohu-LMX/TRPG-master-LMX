@@ -2077,13 +2077,9 @@ class ActionPlanTurnApplication:
         context: ActionPlanNarrationContext,
         narration: ActionPlanNarrationOutput,
     ) -> ActionPlanNarrationOutput:
-        """结构化 @NPC 至少要产生一条独立 NPC 气泡。
+        """为结构化 @NPC 保留回复气泡，缺少台词时用省略号表示沉默。
 
-        这层安全网原先只写在成功路径上，兜底路径全部从 except 直接返回、绕过了
-        它——玩家 @ 了某个 NPC，叙事连拒两次后拿到的是一句状态播报**且该 NPC 一言
-        不发**，是 @NPC 场景下最糟的落点。改成所有返回路径共用。
-
-        它不改变 Engine 裁决结果，也不伪造 NPC 事实。
+        不改变 Engine 裁决结果，也不替 NPC 补写口头回应。
         """
 
         if not context.player_input.interlocutor_id or narration.npc_replies:
@@ -2100,7 +2096,7 @@ class ActionPlanTurnApplication:
             return narration
         return narration.model_copy(
             update={
-                "npc_replies": (ActionPlanNpcReply(speaker_id=npc.id, text="我听见了你的话。"),)
+                "npc_replies": (ActionPlanNpcReply(speaker_id=npc.id, text="..."),)
             }
         )
 

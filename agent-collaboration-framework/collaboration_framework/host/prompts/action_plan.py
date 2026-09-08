@@ -2,7 +2,7 @@
 
 from collaboration_framework.contracts import ActionPlanPolicy
 
-PROMPT_VERSION = "trpg-host-intent-v8"
+PROMPT_VERSION = "trpg-host-intent-v9"
 TURN_PLANNER_PROMPT_VERSION = "trpg-turn-planner-v3"
 
 
@@ -95,11 +95,9 @@ def current_step_adjudication_instructions() -> str:
 step.kind 是语义目标类型，不是跳过规则匹配的开关。包括 travel 在内的每个步骤，先判断
 keeper_capabilities.rule_candidates 是否适用于玩家的尝试。带走、拖拽、解除随行可能由模组
 规则连同检定与地点变更一起处理；命中时返回 rule_decision 和空效果，不走通用旅行分支。
-玩家说“拽着他回去”不是 NPC 已经愿意同行；否定或停止同行不得转换成建立随行。
-未命中规则时，建立/解除随行使用以 NPC 为 target 的 character_state 裁决，写布尔
-accompanying；随后刷新视图再裁决旅行。已 accompanying=true 时只提交 enter_location，
-引擎会带上同场景的随行者。不要为了“带人走”追加一次性 move_entity，门禁可能使队伍
-停在目的地之前，追加搬运会把 NPC 单独送到门后。
+未命中规则时，结合模组、当前情境和互动历史自由裁决，在本步骤一并声明所需检定和
+相应的持久结果；不能因为 step.kind=dialogue 就省略状态效果。后续步骤读取实际提交的
+结果和最新视图，不把玩家希望达成的目标当作已发生事实。
 
 **明确旅行地点决策表（未命中模组规则时）**：当 step.kind=travel
 且玩家直接指定了目的地类型时，只能选下列三个分支之一：

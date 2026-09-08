@@ -8,19 +8,27 @@ from collaboration_framework.contracts import (
     ActionMethod,
     ActionPlanStep,
     ActionTarget,
+    ChangeEntityStateEffect,
+    CheckDecisionRequest,
     EnterLocationEffect,
     ModuleContentV3,
     NarrativeOnlyEffect,
     NoAdjudicationCheck,
     PlayerInput,
     PlayerViewScope,
+    PostRollDecisionRequest,
+    RequiredAdjudicationCheck,
+    SelectCheckChoice,
+    SkillCheckCandidate,
     SubmitAdjudicationRequest,
 )
 from collaboration_framework.engine import (
     ActorState,
     AdjudicationEngineService,
+    DiceRoller,
     InMemoryEngineStore,
     RuleEngineService,
+    SequenceDiceSource,
 )
 from collaboration_framework.engine.initialization import create_initial_game_state
 from collaboration_framework.host.application import PlayerViewProjector
@@ -253,3 +261,126 @@ async def test_production_plan_establishes_companion_by_rule_then_travels_with_f
         PlayerViewScope(room_id="companions", player_id="player", actor_id="actor")
     )
     assert any(npc.id == "james" for npc in view.scene.visible_entities)
+
+
+@pytest.mark.parametrize("npc_id, agrees", [("emily", True), ("james", False)])
+async def test_free_state_decision_reaches_engine_without_another_model_call(npc_id, agrees):
+    store, rules, engine = runtime()
+    context = await context_for(rules, "请你接下来跟着我", kind="dialogue")
+    if npc_id == "emily":
+        assert "accompanying" not in store.inspect_state("companions").entities[npc_id]
+    proposal = ActionAdjudication(
+        request_id=context.step_request_id,
+        source_revision=context.player_view.revision,
+        actor_id=context.player_input.actor_id,
+        summary="对方同意同行" if agrees else "对方不愿同行",
+        target=ActionTarget(kind="entity", id=npc_id),
+        method=ActionMethod(family="action", description="邀请同行"),
+        persistence_intent="character_state" if agrees else "none",
+        check=NoAdjudicationCheck(),
+        success_effects=(
+            ChangeEntityStateEffect(entity_id=npc_id, key="accompanying", value=True)
+            if agrees
+            else NarrativeOnlyEffect(),
+        ),
+    )
+    client = RecordingClient(lambda ctx: proposal)
+    decision = await _ModelStepAdjudicator(PromptActionPlanStepAdjudicator(client)).adjudicate(
+        context
+    )
+    assert decision == proposal
+    await engine.submit(
+        SubmitAdjudicationRequest(room_id="companions", player_id="player", adjudication=decision)
+    )
+    assert len(client.calls) == 1
+    assert store.inspect_state("companions").entities[npc_id].get("accompanying", False) is agrees
+    next_context = await context_for(rules, "去客房", request_id="travel")
+    await engine.submit(
+        SubmitAdjudicationRequest(
+            room_id="companions",
+            player_id="player",
+            adjudication=travel(next_context, "guest_room"),
+        )
+    )
+    npc = store.inspect_state("companions").entities[npc_id]
+    assert npc.get("location_id", "resort_reception") == (
+        "guest_room" if agrees else "resort_reception"
+    )
+
+
+@pytest.mark.parametrize("roll, succeeds", [(20, True), (90, False)])
+async def test_model_binds_free_check_to_state_and_engine_waits_for_result(roll, succeeds):
+    store, rules, _ = runtime()
+    engine = AdjudicationEngineService(store, dice=DiceRoller(SequenceDiceSource([roll])))
+    context = await context_for(rules, "强行拖着对方跟我走", kind="action")
+    proposal = ActionAdjudication(
+        request_id=context.step_request_id,
+        source_revision=context.player_view.revision,
+        actor_id=context.player_input.actor_id,
+        summary="尝试强行带人同行",
+        target=ActionTarget(kind="entity", id="james"),
+        method=ActionMethod(family="action", description="用力拖动对方"),
+        persistence_intent="character_state",
+        check=RequiredAdjudicationCheck(
+            candidates=(
+                SkillCheckCandidate(
+                    candidate_id="force",
+                    skill_id="STR",
+                    difficulty="regular",
+                    method_summary="用力量克服抵抗",
+                    player_safe_reason="对方正在反抗",
+                ),
+            )
+        ),
+        success_effects=(
+            ChangeEntityStateEffect(
+                entity_id="james",
+                key="accompanying",
+                value=True,
+            ),
+        ),
+        failure_effects=(NarrativeOnlyEffect(),),
+    )
+    client = RecordingClient(lambda ctx: proposal)
+    decision = await _ModelStepAdjudicator(PromptActionPlanStepAdjudicator(client)).adjudicate(
+        context
+    )
+    assert decision == proposal
+    execution = await engine.submit(
+        SubmitAdjudicationRequest(room_id="companions", player_id="player", adjudication=decision)
+    )
+    pending = execution.pending_decision
+    assert pending is not None
+    assert store.inspect_state("companions").entities["james"]["accompanying"] is False
+    rolled = await engine.decide(
+        CheckDecisionRequest(
+            request_id="select",
+            room_id="companions",
+            player_id="player",
+            source_revision=execution.view_revision,
+            decision_id=pending.decision_id,
+            decision_version=pending.decision_version,
+            choice=SelectCheckChoice(candidate_id="force"),
+        )
+    )
+    if rolled.status == "awaiting_post_roll_decision":
+        assert store.inspect_state("companions").entities["james"]["accompanying"] is False
+        check = rolled.check_run
+        assert check is not None
+        accept = next(
+            option for option in check.post_roll_options if option.kind == "accept_result"
+        )
+        rolled = await engine.decide_post_roll(
+            PostRollDecisionRequest(
+                request_id="accept",
+                room_id="companions",
+                player_id="player",
+                source_revision=rolled.view_revision,
+                check_id=check.check_id,
+                check_version=check.version,
+                option_id=accept.option_id,
+            )
+        )
+    assert rolled.outcome == ("success" if succeeds else "failure")
+    assert store.inspect_state("companions").entities["james"]["accompanying"] is succeeds
+    assert len(client.calls) == 1
