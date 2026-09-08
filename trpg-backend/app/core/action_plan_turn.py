@@ -1849,6 +1849,11 @@ class ActionPlanTurnApplication:
             memory_context = await self._read_memory_context(
                 player_input=context.player_input,
                 player_view=context.player_view,
+                related_entity_ids=tuple(
+                    npc.id
+                    for npc in context.player_view.scene.visible_entities
+                    if npc.kind == "npc"
+                ),
             )
             recent_history = await self._read_recent_history(
                 player_input=context.player_input,
@@ -2095,9 +2100,7 @@ class ActionPlanTurnApplication:
         if npc is None:
             return narration
         return narration.model_copy(
-            update={
-                "npc_replies": (ActionPlanNpcReply(speaker_id=npc.id, text="..."),)
-            }
+            update={"npc_replies": (ActionPlanNpcReply(speaker_id=npc.id, text="..."),)}
         )
 
     def _sentence_degraded_narration(
@@ -2354,6 +2357,7 @@ class ActionPlanTurnApplication:
         *,
         player_input: PlayerInput,
         player_view: PlayerView,
+        related_entity_ids: tuple[str, ...] = (),
     ) -> MemoryContext:
         """读取可选长期上下文；失败只降级为空，不阻断当前回合。"""
         empty = MemoryContext(
@@ -2365,9 +2369,14 @@ class ActionPlanTurnApplication:
         if self._memory_source is None:
             return empty
         try:
-            entity_ids = _matching_visible_entity_ids(
-                player_input.utterance,
-                player_view,
+            # 叙事传入行动后的在场 NPC，使跨场景经历随人物关联，而不依赖本句点名。
+            entity_ids = tuple(
+                dict.fromkeys(
+                    (
+                        *_matching_visible_entity_ids(player_input.utterance, player_view),
+                        *related_entity_ids,
+                    )
+                )
             )
             if (
                 player_input.interlocutor_id is not None
