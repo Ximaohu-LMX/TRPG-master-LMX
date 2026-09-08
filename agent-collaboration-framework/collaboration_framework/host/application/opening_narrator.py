@@ -42,7 +42,11 @@ class OpeningNarrator:
         self._model = model
 
     async def narrate(self, context: OpeningNarrationContext) -> NarrationOutput:
-        """Require a narration-only result that names every public participant."""
+        """Validate output protocol and shared identity, allowing natural rewrites.
+
+        Authored source and key facts guide generation, not literal acceptance.
+        This validator does not claim to prove semantic coverage of those facts.
+        """
 
         raw = await self._model.generate(context)
         if isinstance(raw, dict) and isinstance(raw.get("text"), str):
@@ -51,11 +55,7 @@ class OpeningNarrator:
             output = NarrationOutput.model_validate(raw)
         except (TypeError, ValueError) as exc:
             raise OpeningNarrationValidationError("outer_schema") from exc
-        if (
-            output.kind != "narration"
-            or output.claimed_fact_ids
-            or output.suggested_actions
-        ):
+        if output.kind != "narration" or output.claimed_fact_ids or output.suggested_actions:
             raise OpeningNarrationValidationError("opening_contract")
         rejection_reason = narration_text_rejection_reason(output.text)
         if rejection_reason is not None:
@@ -66,7 +66,7 @@ class OpeningNarrator:
         )
         if subject_rejection is not None:
             raise OpeningNarrationValidationError("subject_ownership")
-        if any(
+        if (len(context.participants) > 1 or context.addressing_mode == "named_actor") and any(
             participant.name not in output.text for participant in context.participants
         ):
             raise OpeningNarrationValidationError("participant_coverage")
@@ -110,9 +110,9 @@ def deterministic_opening_narration(
             label = f"{label}（{'，'.join(public_details)}）"
         participant_labels.append(label)
     if len(participant_labels) == 1:
-        scene_lines.append(f"{participant_labels[0]}此刻就在这里。")
+        scene_lines.append(f"{participant_labels[0]}此刻位于{scene_name}。")
     else:
-        scene_lines.append(f"共同在场的调查员有：{'、'.join(participant_labels)}。")
+        scene_lines.append(f"此刻在{scene_name}的调查员有：{'、'.join(participant_labels)}。")
     return NarrationOutput(
         kind="narration",
         text="\n".join(scene_lines),

@@ -1366,7 +1366,11 @@ class AdjudicationEngineService:
                 player_id=player_id,
                 actor_id=actor_id,
             ),
-            "committed_results": committed_results_from_events(final.events),
+            "committed_results": committed_results_from_events(
+                final.events,
+                item_ids=frozenset(runtime.game_state.item_instances)
+                | frozenset(final.state.item_instances),
+            ),
         }
         if final.pending_decision is not None:
             return AdjudicationExecution(

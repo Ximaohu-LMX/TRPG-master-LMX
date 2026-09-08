@@ -29,6 +29,9 @@ from collaboration_framework.engine import (
     RuleEngineService,
 )
 from collaboration_framework.host.application import PlayerViewProjector, TurnExecutionError
+from collaboration_framework.host.application.narration_policy import (
+    narration_atmosphere_rejection_reason,
+)
 from collaboration_framework.host.ports import ActionPlanStepFailure
 from collaboration_framework.host.schemas import (
     ActionPlanStepContext,
@@ -130,7 +133,9 @@ def test_semantic_planner_route_preserves_fast_path_for_clear_single_steps(
 
 def test_semantic_planner_rollout_requires_independent_configuration() -> None:
     with pytest.raises(ValidationError, match="TURN_PLANNER_PROVIDER"):
-        Settings(host_model_provider="fake", turn_planner_rollout_percent=1)
+        Settings(
+            host_model_provider="fake", turn_planner_provider=None, turn_planner_rollout_percent=1
+        )
     settings = Settings(
         host_model_provider="fake",
         turn_planner_provider="fake",
@@ -154,11 +159,17 @@ def test_action_plan_narration_preserves_completed_travel_before_clarification()
     assert "绝不得说\n该地点没找到" in _ACTION_PLAN_NARRATION_INSTRUCTIONS
 
 
-def test_action_plan_narration_forbids_repeating_previous_atmosphere() -> None:
-    assert "previous_published_narration" in _ACTION_PLAN_NARRATION_INSTRUCTIONS
-    assert "不得用相同或几乎相同的环境开场重铺" in _ACTION_PLAN_NARRATION_INSTRUCTIONS
-    assert "把同一套时间、光线、窗景" in _ACTION_PLAN_NARRATION_INSTRUCTIONS
-    assert "不要再写一整段地点简介" in _ACTION_PLAN_NARRATION_INSTRUCTIONS
+@pytest.mark.parametrize("scene_changed", [False, True])
+def test_action_plan_narration_atmosphere_depends_on_scene_change(scene_changed: bool) -> None:
+    previous = "下午的阳光透过门厅的窗户。调查员站在桌旁。"
+    current = "下午的阳光照亮了客房的窗台。"
+    assert narration_atmosphere_rejection_reason(
+        current, previous, scene_changed=scene_changed
+    ) == (None if scene_changed else "atmosphere_repeat")
+    assert (
+        narration_atmosphere_rejection_reason(previous, previous, scene_changed=scene_changed)
+        == "atmosphere_repeat"
+    )
 
 
 def test_action_plan_narration_retry_hint_covers_all_safety_rejections() -> None:

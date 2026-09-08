@@ -103,6 +103,13 @@ class ActionPlanNarrator:
             for step in context.completed_steps
             for result in step.committed_results
         )
+        arrived = any(
+            result.kind == "location"
+            and result.target_id == context.player_view.scene.id
+            for result in committed_results
+        )
+        if arrived and context.player_view.scene.name not in output.text:
+            raise ActionPlanNarrationValidationError("required_arrival_missing")
         # 申报字段的校验退化为对引擎真值的集合包含判断，不含任何词表。这不是
         # “信任模型”：撒谎的成本从绕过一个动词表，变成必须写一个引擎当场查表
         # 否掉的 id。
@@ -191,6 +198,7 @@ class ActionPlanNarrator:
         atmosphere_rejection = narration_atmosphere_rejection_reason(
             free_text,
             getattr(context, "previous_published_narration", None),
+            scene_changed=arrived,
         )
         if atmosphere_rejection is not None:
             raise ActionPlanNarrationValidationError(atmosphere_rejection)

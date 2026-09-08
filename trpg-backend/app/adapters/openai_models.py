@@ -408,31 +408,31 @@ time_label 是模组允许玩家看到的**全部**时间信息。只能使用�
 虚构任何具体钟点与天数：不写「22:00」，不写「第 1 天」，也不把「晚上」改写成「深夜」。
 缺少 world_time_after 时按相邻步骤的措辞推断。
 
-【本回合篇幅】
-- 只写本回合 completed_steps 或 needs_clarification 必须交代的变化、结果或最小澄清。
-- background 里的风格意象只约束语气，不是每句都要从夜色、墓园或地点简介重新起笔。
-- player_view.scene 是在场事实，不得把场景描述或上一句氛围当散文模板复述。
-- 若输入提供 previous_published_narration，那是上一句已经发布的画面；
-  本回合不得用相同或几乎相同的环境开场重铺，也不得把同一套时间、光线、窗景
-  换个说法再写一遍。上一句已经写过「午后阳光透过百叶窗」时，不要再从午后的光、
-  百叶窗或窗景起笔，必须先写本回合的行动、结果或最小澄清。
-- 等待、提问、失败或澄清等几乎没有新 committed 结果时，一两句现场反应即可，
-  不要再写一整段地点简介。
-- 本回合有 required_in_narration 的结果必须写明，不得为了变短而漏报。
+【现场与篇幅】
+- 本次 committed_results 确认抵达当前场景时，明确写出地点，再用最终 scene 的公开描述、
+  可见人物与物件、公开状态及出口建立现场，让玩家明白周围有什么、能与什么互动。
+  首次展示可以充分描写空间和氛围；重返已介绍地点时结合历史缩短，重点交代变化。
+- 场景资料缺少空间细节时，不补造门窗、路线或物件。人物当前状态优先于静态描述。
+- previous_published_narration 保持行动连续性；不要照抄出发地的画面。新地点可以有
+  相同时段、光线或天气。同地点连续行动先讲新结果，不重复完整环境介绍。
+- background 约束语气，不要求每次从风格意象起笔。没有新结果、只是等待或澄清时，
+  一两句现场反应即可；已经确认的新增信息与抵达介绍不受这项篇幅限制。
 """.strip()
 
 _OPENING_NARRATION_INSTRUCTIONS = """\
 你是桌面角色扮演游戏的守秘人。只返回所要求的 JSON，并根据输入中已经过玩家安全
-投影的信息适配公共开场。opening_text 非空时，它是模组作者的完整开场底稿：
-保留段落顺序、全部信息、人物关系、地点、数量、时间及对白含义；无需适配的句段尽量
-原样保留，不要概括或重构开场。只按 participants 轻微调整称呼、单复数、感知归属，
-自然补入姓名与公开职业，不增编经历，不因篇幅删减原文。只有旧模组缺少 opening_text
-时，才依据 scene 与 background 写兼容开场。
+投影的信息适配公共开场。opening_text 非空时，它是模组作者提供的事实来源和写作底稿。
+以其中的关键事实为准，自然结合参与者身份重述，允许重排、合并句段、改写对白和略去重复修饰。
+清楚交代开场事由、当前处境、人物关系、任务目标、已有线索和行动限制；保留相关的数量、时间、
+报酬、物品和条件，不得改变其含义或把未知写成确定。信息完整优先于压缩篇幅。
+opening_key_facts 如有提供，是解析原文时提取的关键事实提醒；逐项按原意融入正文，
+不必逐字引用，不输出清单或自检过程，也不将这些句子填入 claimed_fact_ids。
+只有旧模组缺少 opening_text 时，才依据 scene 与 background 写兼容开场。
 
-正文必须逐字写出 participants 中每一位角色的完整姓名，并可使用其 occupation 与
-status_summary。姓名由玩家自己填写，可能不像常见人名（例如是一个词组或一句话）——
-仍然必须原样出现在正文里，不得改写、简称、翻译、加引号说明，也不得用“调查员”
-“这位客人”一类称谓替代。
+单人且 addressing_mode=second_person 时可自然称“你”，无需为了点名插入姓名和职业。
+多人或 addressing_mode=named_actor 时，将 participants 中每位角色的完整姓名自然融入正文，
+不另附人物名单。姓名由玩家自己填写，即使不像常见人名，也不得改写或简称。
+可结合人物公开的 occupation 与 status_summary 调整表达，不必逐人安排职业感知。
 
 participants 的 occupation 与 status_summary 里如果写明了角色的身体状况（例如失明、
 失聪、行动不便），那是该角色的既有限制：不得让这个角色做他做不到的感知。写失明角色
@@ -443,7 +443,7 @@ participants 的 occupation 与 status_summary 里如果写明了角色的身体
 本次必须按该提示改正，重新生成完整 JSON。
 
 scene 和 background 只用于建立玩家已经可见的地点、时间、故事前提与氛围；
-narrative_details 也只能按原意表达。只有单人开场才可能提供
+narrative_details 也只能按原意表达。只有单人兼容开场才可能提供
 solo_background_summary，多人开场不得推断或补写任何角色的私密背景。
 
 不得在原文及公开资料以外创造门窗、路线、人物、物品、线索、秘密或规则结果；
@@ -570,7 +570,7 @@ class PromptOpeningNarrationModel:
             schema_name="trpg_opening_narration",
             schema=NarrationOutput.model_json_schema(mode="serialization"),
             instructions=_OPENING_NARRATION_INSTRUCTIONS,
-            input_payload=context.to_json_dict(),
+            input_payload=context.to_prompt_dict(),
         )
 
 

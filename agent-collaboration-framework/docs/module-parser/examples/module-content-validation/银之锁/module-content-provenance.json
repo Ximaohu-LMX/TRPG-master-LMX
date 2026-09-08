@@ -9,9 +9,13 @@
     "index_base": 0,
     "selection": "默认起始路径的公开原文；保留作者措辞与单位，排除 KP 指导和其它分支。"
   },
+  "opening_key_facts": {
+    "source_field": "opening_text",
+    "selection": "仅从同路径 opening_text 提取公开任务、线索、数量、时间和条件；运行时作为改写提醒，不替代原文。"
+  },
   "paragraph_numbering": "解压 word/document.xml 后按非空 w:p 顺序从 1 编号",
   "module_id": "silver-lock",
-  "version": "3.0.3",
+  "version": "3.0.4",
   "locations": {
     "sealed_room": [
       11,

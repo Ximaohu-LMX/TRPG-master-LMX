@@ -143,6 +143,15 @@
       "default": null,
       "title": "Opening Text"
     },
+    "opening_key_facts": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Opening Key Facts",
+      "type": "array"
+    },
     "scene": {
       "$ref": "#/$defs/OpeningSceneContext"
     },

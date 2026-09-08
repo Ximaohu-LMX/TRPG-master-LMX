@@ -176,3 +176,93 @@ async def test_information_needs_full_body_and_only_source_spans_get_style_exemp
     with pytest.raises(ActionPlanNarrationValidationError) as exc:
         narrator.validate(context, {**candidate, "text": body + "有人喊：“走吧！”"})
     assert exc.value.reason == "npc_dialogue_embedded_in_text"
+
+
+@pytest.mark.parametrize(
+    "event_type,payload,expected",
+    [
+        (
+            "travel.resolved",
+            {"destination_id": "room", "path": ["hall", "room"]},
+            "room",
+        ),
+        ("travel.resolved", {"destination_id": "hall", "path": ["hall"]}, None),
+        (
+            "travel.interrupted",
+            {"destination_id": "room", "current_location_id": "hall", "path": ["hall"]},
+            None,
+        ),
+        (
+            "travel.interrupted",
+            {
+                "destination_id": "room",
+                "current_location_id": "gate",
+                "path": ["hall", "gate"],
+            },
+            "gate",
+        ),
+        ("location.entered", {"location_id": "room"}, "room"),
+        ("entity.moved", {"entity_id": "companion", "location_id": "room"}, None),
+        ("entity.moved", {"entity_id": "key", "holder_actor_id": ACTOR}, "key"),
+    ],
+)
+def test_committed_travel_and_inventory_results_use_actual_effects(
+    event_type, payload, expected
+):
+    from collaboration_framework.engine.persistent_results import (
+        committed_results_from_events,
+    )
+
+    event = DomainEvent(
+        event_id="effect",
+        sequence=1,
+        type=event_type,
+        payload=payload,
+        room_id=ROOM,
+        actor_id=ACTOR,
+        client_action_id="action",
+        cause="test",
+    )
+    results = committed_results_from_events((event,), item_ids=frozenset({"key"}))
+    assert [item.target_id for item in results] == (
+        [] if expected is None else [expected]
+    )
+    if results:
+        assert results[0].kind == ("inventory" if expected == "key" else "location")
+
+
+@pytest.mark.asyncio
+async def test_confirmed_arrival_requires_place_and_allows_new_scene_atmosphere():
+    from collaboration_framework.contracts import CommittedResult
+    from collaboration_framework.host.application.narration_policy import (
+        narration_atmosphere_rejection_reason,
+    )
+
+    service, _, _, _, _ = orchestrator()
+    original = player_input()
+    await service.start_or_resume(original, plan=plan(2))
+    context = await service.build_narration_context(original)
+    scene = context.player_view.scene
+    prior = "下午的阳光透过庄园会客厅的窗户。人们在桌边等候。"
+    text = f"你走进{scene.name}。下午的阳光落在这里的窗台上。"
+    assert narration_atmosphere_rejection_reason(text, prior) == "atmosphere_repeat"
+    ref = context.allowed_evidence_refs[0]
+    step = context.completed_steps[0].model_copy(
+        update={
+            "committed_results": (
+                CommittedResult(kind="location", target_id=scene.id, event_ref=ref),
+            )
+        }
+    )
+    context = context.model_copy(
+        update={"completed_steps": (step,), "previous_published_narration": prior}
+    )
+    narrator = ActionPlanNarrator(None)
+    assert narrator.validate(context, {"text": text}).text == text
+    with pytest.raises(ActionPlanNarrationValidationError) as exc:
+        narrator.validate(context, {"text": "你停下脚步。"})
+    assert exc.value.reason == "required_arrival_missing"
+    assert (
+        narration_atmosphere_rejection_reason(prior, prior, scene_changed=True)
+        == "atmosphere_repeat"
+    )

@@ -7,12 +7,22 @@ from unittest.mock import AsyncMock
 import pytest
 from collaboration_framework.contracts import (
     ActionPlanPolicy,
+    CommittedResult,
+    InventoryItemView,
+    KeeperCapabilityView,
+    KeeperEntityCapability,
+    KeeperInformationCapability,
     NarrationEvidence,
     PlayerInput,
+    PlayerView,
     PostRollDecisionRequest,
+    SceneView,
+    SelfActorView,
+    VisibleEntity,
 )
 from collaboration_framework.host.application import (
     ActionPlanNarrationValidationError,
+    ActionPlanNarrator,
 )
 from collaboration_framework.host.schemas import (
     ActionPlanNarrationContext,
@@ -261,13 +271,18 @@ def test_partial_travel_success_fallback_keeps_the_arrival() -> None:
             SimpleNamespace(
                 outcome="success",
                 semantic_goal="前往旅馆",
-                committed_results=(),
+                committed_results=(
+                    CommittedResult(kind="location", target_id="inn", event_ref="arrived"),
+                ),
             ),
         ),
         player_view=SimpleNamespace(
             scene=SimpleNamespace(
+                id="inn",
                 name="镇上的旅店",
+                description="门厅亮着灯。",
                 visible_entities=(),
+                available_exits=(),
             ),
         ),
     )
@@ -354,7 +369,7 @@ async def test_narration_retries_atmosphere_repeat_with_hint() -> None:
 
     assert narrate.await_count == 2
     retry_context = narrate.await_args_list[1].args[0]
-    assert "不得再用午后阳光、夜色、窗景等环境开场重铺" in retry_context.narration_retry_hint
+    assert "不要照抄上一段环境开场" in retry_context.narration_retry_hint
     assert narration.kind == "narration"
     assert "这次行动已经按当前可确认的结果完成" in narration.text
 
@@ -856,3 +871,128 @@ async def test_confirmed_information_survives_retry_exhaustion(last_error, statu
     assert output.claimed_evidence_refs == (evidence.ref,)
     assert output.kind == ("clarification" if status == "needs_clarification" else "narration")
     assert app._narrator.narrate.await_count == 2
+
+
+def test_travel_intent_with_success_but_no_location_result_does_not_claim_arrival():
+    context = SimpleNamespace(
+        termination_status="needs_clarification",
+        player_input=SimpleNamespace(utterance="去旅店", client_action_id="no-travel"),
+        completed_steps=(
+            SimpleNamespace(outcome="success", semantic_goal="前往旅店", committed_results=()),
+        ),
+        player_view=SimpleNamespace(
+            scene=SimpleNamespace(id="street", name="街道", visible_entities=())
+        ),
+    )
+    output = ActionPlanTurnApplication._deterministic_narration_fallback(cast(Any, context))
+    assert "抵达" not in output.text
+
+
+@pytest.mark.parametrize(
+    ("text", "claimed_inventory_ids", "accepted"),
+    [
+        pytest.param("你握着铅笔刀，仔细查看挂画。", ("pencil_knife",), True, id="carried-item"),
+        pytest.param("床下藏着一把备用钥匙。", (), False, id="undiscovered-item"),
+        pytest.param("你把暗格钥匙收进背包。", ("wall_key",), False, id="visible-but-not-owned"),
+        pytest.param("铅笔刀的刀柄里藏着密文。", (), False, id="carried-item-secret"),
+        pytest.param("同伴口袋里有一枚铜哨。", (), False, id="other-actor-private-item"),
+    ],
+)
+async def test_narration_treats_inventory_as_public_without_releasing_hidden_content(
+    text: str, claimed_inventory_ids: tuple[str, ...], accepted: bool
+) -> None:
+    player_input = PlayerInput(
+        room_id="inventory-narration",
+        player_id="player-1",
+        actor_id="actor-1",
+        client_action_id="inspect-painting",
+        utterance="仔细查看挂画",
+    )
+    view = PlayerView(
+        room_id=player_input.room_id,
+        player_id=player_input.player_id,
+        actor_id=player_input.actor_id,
+        background="调查员正在密室中寻找线索。",
+        scene_id="room",
+        phase="playing",
+        revision="13",
+        self_actor=SelfActorView(id="actor-1", name="调查员"),
+        scene=SceneView(
+            id="room",
+            name="密室",
+            description="墙上挂着一幅画。",
+            visible_entities=(
+                VisibleEntity(
+                    id="wall_key", kind="object", name="暗格钥匙", description="暗格中的钥匙。"
+                ),
+            ),
+        ),
+        inventory=(
+            InventoryItemView(
+                id="pencil_knife", name="铅笔刀", quantity=1, condition="intact", version=1
+            ),
+        ),
+    )
+    capabilities = KeeperCapabilityView(
+        room_id=player_input.room_id,
+        actor_id=player_input.actor_id,
+        revision=view.revision,
+        entities=(
+            KeeperEntityCapability(
+                id="pencil_knife",
+                name="铅笔刀",
+                kind="object",
+                origin="canon",
+                holder_actor_id="actor-1",
+            ),
+            KeeperEntityCapability(id="wall_key", name="暗格钥匙", kind="object", origin="canon"),
+            KeeperEntityCapability(id="bed_key", name="备用钥匙", kind="object", origin="canon"),
+            KeeperEntityCapability(
+                id="whistle",
+                name="铜哨",
+                kind="object",
+                origin="canon",
+                holder_actor_id="actor-2",
+            ),
+        ),
+        information=(
+            KeeperInformationCapability(
+                id="knife_secret",
+                title="刀柄密文",
+                summary="刀柄中的秘密",
+                content="铅笔刀的刀柄里藏着密文。",
+                related_entities=("pencil_knife",),
+            ),
+        ),
+    )
+    context = ActionPlanNarrationContext(
+        background=view.background,
+        player_input=player_input,
+        plan_goal=player_input.utterance,
+        termination_status="resolved",
+        player_view=view,
+    )
+    safe_retry = "你继续查看挂画。"
+    generate = AsyncMock(
+        side_effect=[
+            {"text": text, "claimed_inventory_ids": claimed_inventory_ids},
+            {"text": safe_retry},
+        ]
+    )
+
+    class Model:
+        async def generate(self, context: ActionPlanNarrationContext) -> object:
+            return await generate(context)
+
+    application = object.__new__(ActionPlanTurnApplication)
+    application._narrator = ActionPlanNarrator(Model())
+    application._keeper_capabilities = AsyncMock(return_value=capabilities)
+    application._memory_source = None
+    application._recent_history_enabled = False
+    application._recent_history_source = SimpleNamespace()
+
+    output = await application._narrate(context)
+
+    assert generate.await_count == (1 if accepted else 2)
+    assert output.text == (text if accepted else safe_retry)
+    assert output.claimed_inventory_ids == (claimed_inventory_ids if accepted else ())

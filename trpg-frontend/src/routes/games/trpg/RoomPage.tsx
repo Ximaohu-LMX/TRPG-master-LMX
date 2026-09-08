@@ -507,8 +507,9 @@ const REVEAL_TICK_MS = 30
 const REVEAL_MAX_MS = 2400
 
 function mergeHistoricalMessages(current: Message[], history: Message[]): Message[] {
-  const ids = new Set(current.flatMap((item) => (item.messageId ? [item.messageId] : [])))
-  return [...history.filter((item) => !item.messageId || !ids.has(item.messageId)), ...current]
+  // 已入库消息使用历史的顺序和时间；保留历史快照尚未包含的实时消息。
+  const ids = new Set(history.flatMap((item) => (item.messageId ? [item.messageId] : [])))
+  return [...history, ...current.filter((item) => !item.messageId || !ids.has(item.messageId))]
 }
 
 function appendLiveMessage(current: Message[], message: Message): Message[] {

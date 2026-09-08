@@ -994,6 +994,12 @@ class ModuleContentV3(ContractModel):
         description="当前默认起点可向全体玩家朗读的完整开场原文；缺省兼容旧版本。",
     )
 
+    opening_key_facts: tuple[Annotated[str, Field(min_length=1)], ...] = Field(
+        default=(),
+        exclude_if=lambda value: not value,
+        description="从开场原文提取的公开关键事实提醒，保留任务、线索、数量和条件；不替代原文。",
+    )
+
     information: tuple[InformationSpecV3, ...] = ()
     knowledge_goals: tuple[KnowledgeGoalSpec, ...] = ()
     entities: tuple[EntitySpecV3, ...] = ()
@@ -1009,6 +1015,14 @@ class ModuleContentV3(ContractModel):
     initial_state: InitialStateSpec
     world_profile: WorldProfileSpec = Field(default_factory=WorldProfileSpec)
     time_policy: ModuleTimePolicySpec = Field(default_factory=ModuleTimePolicySpec)
+
+    @model_validator(mode="after")
+    def validate_opening_key_facts(self) -> ModuleContentV3:
+        if self.opening_key_facts and not (self.opening_text or "").strip():
+            raise ValueError("opening_key_facts 必须有 opening_text 作为来源")
+        if any(not fact.strip() for fact in self.opening_key_facts):
+            raise ValueError("opening_key_facts 不得包含空白事实")
+        return self
 
     @model_validator(mode="after")
     def validate_unique_ids(self) -> ModuleContentV3:

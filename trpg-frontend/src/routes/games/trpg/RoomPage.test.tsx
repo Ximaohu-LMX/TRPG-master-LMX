@@ -1089,73 +1089,81 @@ describe('RoomPage conversation history', () => {
     fireEvent.pointerUp(avatar)
   })
 
-  it('deduplicates game-opening when history arrives before realtime', async () => {
-    mockListConversation.mockResolvedValue([
-      {
-        id: 'game-opening',
-        type: 'narration.push',
-        channel: 'action',
-        payload: {
-          messageId: 'game-opening',
-          text: '唯一的权威开场',
-        },
-        createdAt: '2026-07-28T10:03:00Z',
-      },
-    ])
-    renderRoomPage()
-    expect(await screen.findByText('唯一的权威开场')).toBeInTheDocument()
-
-    emitWsMessage({
-      type: 'narration.push',
-      payload: {
-        messageId: 'game-opening',
-        text: '唯一的权威开场',
-      },
-    })
-
-    await waitFor(() => {
-      expect(screen.getAllByText('唯一的权威开场')).toHaveLength(1)
-    })
-  })
-
-  it('deduplicates game-opening when realtime arrives before history', async () => {
-    let resolveHistory!: (events: RoomConversationEvent[]) => void
-    mockListConversation.mockReturnValue(
-      new Promise<RoomConversationEvent[]>((resolve) => {
-        resolveHistory = resolve
-      }),
-    )
-    renderRoomPage()
-    await waitFor(() => expect(mockOnWsMessage).toHaveBeenCalled())
-
-    emitWsMessage({
-      type: 'narration.push',
-      payload: {
-        messageId: 'game-opening',
-        text: '实时先到的权威开场',
-      },
-    })
-    expect(await screen.findByText('实时先到的权威开场')).toBeInTheDocument()
-
-    await act(async () => {
-      resolveHistory([
+  it.each(['history-first', 'replay-first'] as const)(
+    'restores opening order and timestamp while preserving newer live messages (%s)',
+    async (arrivalOrder) => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-09-10T09:50:00Z'))
+      const openingTime = '2026-09-10T09:30:01Z'
+      const openingText = '原来的权威开场'
+      const actionText = '仔细查看挂画'
+      const resultText = '挂画后的暗格里藏着一把小钥匙。'
+      const newerText = '随后传来了脚步声。'
+      const history: RoomConversationEvent[] = [
         {
-          id: 'game-opening',
+          id: 'opening-event',
           type: 'narration.push',
           channel: 'action',
-          payload: {
-            messageId: 'game-opening',
-            text: '实时先到的权威开场',
-          },
-          createdAt: '2026-07-28T10:03:00Z',
+          payload: { messageId: 'game-opening', text: openingText },
+          createdAt: openingTime,
         },
-      ])
-    })
+        {
+          id: 'inspect-painting',
+          type: 'action.broadcast',
+          channel: 'action',
+          payload: {
+            playerId: 'player-1',
+            clientActionId: 'inspect-painting',
+            nickname: '陈探员',
+            utterance: actionText,
+          },
+          createdAt: '2026-09-10T09:35:21Z',
+        },
+        {
+          id: 'inspect-painting',
+          type: 'narration.push',
+          channel: 'action',
+          payload: { messageId: 'inspect-painting', text: resultText },
+          createdAt: '2026-09-10T09:35:33Z',
+        },
+      ]
+      let resolveHistory!: (events: RoomConversationEvent[]) => void
+      mockListConversation.mockReturnValue(
+        new Promise<RoomConversationEvent[]>((resolve) => { resolveHistory = resolve }),
+      )
+      const { container } = renderRoomPage()
+      await waitFor(() => expect(mockOnWsMessage).toHaveBeenCalled())
 
-    await waitFor(() => {
-      expect(screen.getAllByText('实时先到的权威开场')).toHaveLength(1)
-    })
-  })
+      if (arrivalOrder === 'history-first') {
+        await act(async () => { resolveHistory(history) })
+        expect(await screen.findByText(resultText)).toBeInTheDocument()
+      }
+      emitWsMessage({
+        type: 'narration.push',
+        payload: { messageId: 'game-opening', text: openingText },
+      })
+      expect(await screen.findByText(openingText)).toBeInTheDocument()
+      // 历史快照不包含刚收到的新消息，恢复历史时必须保留它。
+      emitWsMessage({
+        type: 'narration.push',
+        payload: { messageId: 'newer-action', text: newerText },
+      })
+      expect(await screen.findByText(newerText)).toBeInTheDocument()
+      if (arrivalOrder === 'replay-first') {
+        await act(async () => { resolveHistory(history) })
+      }
+
+      await waitFor(() => {
+        const contents = Array.from(container.querySelectorAll('.room-play__narration-text'))
+          .map((element) => element.textContent)
+        expect(contents).toEqual([openingText, actionText, resultText, newerText])
+        const openingBubble = screen.getByText(openingText).closest('.room-play__message')
+        expect(openingBubble?.querySelector('.room-play__message-meta > span')).toHaveTextContent(
+          new Date(openingTime).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+        )
+      })
+    },
+  )
 
   it('shows opening progress and clears it when the opening arrives', async () => {
     mockGetOpeningMessageId.mockReturnValue('game-opening')

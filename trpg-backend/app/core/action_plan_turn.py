@@ -858,13 +858,14 @@ def _deterministic_clarification_text(context: ActionPlanNarrationContext) -> st
         step for step in context.completed_steps if getattr(step, "outcome", None) == "success"
     )
     completed_travel = any(
-        _explicit_travel_phrase(getattr(step, "semantic_goal", "")) is not None
-        for step in successful_steps
+        result.kind == "location"
+        and result.target_id == getattr(context.player_view.scene, "id", None)
+        for step in context.completed_steps
+        for result in step.committed_results
     )
     actor = _acting_address(context)
     if completed_travel:
-        scene_name = getattr(context.player_view.scene, "name", "") or "当前地点"
-        return f"{actor}已经抵达{scene_name}，但后续行动尚未形成可确认的结果。"
+        return "后续行动尚未形成可确认的结果。"
     if successful_steps:
         return "此前已经完成的行动仍然有效，但后续行动尚未形成可确认的结果。"
     if _explicit_travel_phrase(context.player_input.utterance) is not None:
@@ -1821,6 +1822,8 @@ class ActionPlanTurnApplication:
             if capabilities is not None:
                 public_info_ids = {item.id for item in context.player_view.known_information}
                 public_entity_ids = {item.id for item in context.player_view.scene.visible_entities}
+                # 随身物品不在场景实体列表里，但对当前玩家同样公开。
+                public_entity_ids.update(item.id for item in context.player_view.inventory)
                 # 用有序映射而不是 set：命中禁词时只能记来源 id，不能记词本身
                 # （禁词取自尚未公开的剧情内容），所以索引必须与来源表严格同序。
                 term_sources: dict[str, str] = {}
@@ -1931,13 +1934,22 @@ class ActionPlanTurnApplication:
                             )
                         }
                     )
+                elif attempt == 0 and exc.reason == "required_arrival_missing":
+                    context = context.model_copy(
+                        update={
+                            "narration_retry_hint": (
+                                f"已实际抵达{context.player_view.scene.name}。请在正文写出该地点，"
+                                "依据最终场景的公开描述、人物、物件和出口介绍现场。"
+                            )
+                        }
+                    )
                 elif attempt == 0 and exc.reason == "atmosphere_repeat":
                     context = context.model_copy(
                         update={
                             "narration_retry_hint": (
-                                "上一句已发布叙事已经交代了当前的时间、光线或氛围。"
-                                "本回合不得再用午后阳光、夜色、窗景等环境开场重铺，"
-                                "必须先写本回合的结果、现场变化或最小澄清。"
+                                "不要照抄上一段环境开场。仍在同一场景时，先写行动结果；"
+                                "已经抵达新地点时，使用目的地的公开资料介绍现场，"
+                                "相同时段或光线可以保留。"
                             )
                         }
                     )
@@ -2240,6 +2252,26 @@ class ActionPlanTurnApplication:
             for result, label in results
             if label is not None or result in inventory_results
         )
+        arrivals = tuple(
+            result
+            for result, _label in results
+            if result.kind == "location"
+            and result.target_id == getattr(context.player_view.scene, "id", None)
+        )
+        if arrivals:
+            scene = context.player_view.scene
+            statements.insert(
+                0, f"{_acting_address(context)}已经抵达{scene.name}。{scene.description}"
+            )
+            if scene.visible_entities:
+                statements.append(
+                    "周围可见：" + "、".join(item.name for item in scene.visible_entities) + "。"
+                )
+            if scene.available_exits:
+                statements.append(
+                    "可见出口：" + "、".join(item.name for item in scene.available_exits) + "。"
+                )
+            refs = tuple(dict.fromkeys((*refs, *(item.event_ref for item in arrivals))))
         if any(item.required_in_narration for item in getattr(context, "narration_evidence", ())):
             required_output = ActionPlanTurnApplication._required_evidence_fallback(context)
             statements.append(required_output.text)

@@ -3104,6 +3104,16 @@
       "description": "当前默认起点可向全体玩家朗读的完整开场原文；缺省兼容旧版本。",
       "title": "Opening Text"
     },
+    "opening_key_facts": {
+      "default": [],
+      "description": "从开场原文提取的公开关键事实提醒，保留任务、线索、数量和条件；不替代原文。",
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Opening Key Facts",
+      "type": "array"
+    },
     "information": {
       "default": [],
       "items": {

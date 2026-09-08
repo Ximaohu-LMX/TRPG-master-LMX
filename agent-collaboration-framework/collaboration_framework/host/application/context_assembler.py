@@ -12,7 +12,11 @@ class ContextAssembler:
     """Build minimal model inputs from player-safe views and completed results."""
 
     def for_opening(
-        self, player_view: PlayerView, *, opening_text: str | None = None
+        self,
+        player_view: PlayerView,
+        *,
+        opening_text: str | None = None,
+        opening_key_facts: tuple[str, ...] = (),
     ) -> OpeningNarrationContext:
         """Expose public scene/participant data, plus solo-only self background."""
 
@@ -35,6 +39,7 @@ class ContextAssembler:
         )
         return OpeningNarrationContext(
             opening_text=opening_text,
+            opening_key_facts=opening_key_facts,
             background=player_view.background,
             scene=OpeningSceneContext(
                 id=player_view.scene.id,
@@ -45,8 +50,6 @@ class ContextAssembler:
             ),
             participants=participants,
             solo_background_summary=(
-                player_view.self_actor.background_summary
-                if len(participants) == 1
-                else ""
+                player_view.self_actor.background_summary if len(participants) == 1 else ""
             ),
         )
