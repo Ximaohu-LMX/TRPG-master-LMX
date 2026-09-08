@@ -130,6 +130,19 @@
       "title": "Background",
       "type": "string"
     },
+    "opening_text": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Opening Text"
+    },
     "scene": {
       "$ref": "#/$defs/OpeningSceneContext"
     },

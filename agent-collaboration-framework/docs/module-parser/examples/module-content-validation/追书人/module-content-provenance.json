@@ -1,0 +1,12 @@
+{
+  "module_id": "paper-chase-zh-coc7",
+  "version": "3.0.11",
+  "source": "追书人.pdf",
+  "opening_text": {
+    "pages": [
+      1
+    ],
+    "heading": "玩家信息",
+    "normalization": "合并 PDF 自动换行，保留两个段落和原文用字。"
+  }
+}

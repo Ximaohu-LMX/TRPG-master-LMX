@@ -38,6 +38,7 @@ class OpeningNarrationContext(ContractModel):
         min_length=1,
         description="玩家可知的时代、地点、故事前提与叙事基调。",
     )
+    opening_text: str | None = Field(default=None, min_length=1)
     scene: OpeningSceneContext
     participants: tuple[OpeningParticipant, ...] = Field(min_length=1)
     solo_background_summary: str = ""

@@ -11,7 +11,9 @@ from collaboration_framework.host.schemas import (
 class ContextAssembler:
     """Build minimal model inputs from player-safe views and completed results."""
 
-    def for_opening(self, player_view: PlayerView) -> OpeningNarrationContext:
+    def for_opening(
+        self, player_view: PlayerView, *, opening_text: str | None = None
+    ) -> OpeningNarrationContext:
         """Expose public scene/participant data, plus solo-only self background."""
 
         participants = (
@@ -32,6 +34,7 @@ class ContextAssembler:
             ),
         )
         return OpeningNarrationContext(
+            opening_text=opening_text,
             background=player_view.background,
             scene=OpeningSceneContext(
                 id=player_view.scene.id,

@@ -229,3 +229,56 @@ async def test_opening_retry_is_capped_at_one_extra_attempt() -> None:
     # 降级模板本身点名了全部参与者，安全性不依赖这次重试。
     assert "杜明" in result.narration.text
     assert "林夏" in result.narration.text
+
+
+@pytest.mark.parametrize("mode,outcome", [("template", "valid"), ("model", "connection")])
+async def test_opening_reads_authored_source_from_bound_module(mode, outcome):
+    from collaboration_framework.contracts import ModuleContentV3, PlayerViewScope
+    from collaboration_framework.engine import ActorState
+    from collaboration_framework.engine.initialization import create_initial_game_state
+    from collaboration_framework.host.application import PlayerViewProjector
+
+    from app.service.builtin_module_loader import HAPPY_FROG_VILLAGE_SPEC
+
+    module = ModuleContentV3.model_validate_json(HAPPY_FROG_VILLAGE_SPEC.source_path.read_text())
+    store = InMemoryEngineStore()
+    state = create_initial_game_state(
+        module,
+        room_id="room-1",
+        actors={
+            "actor-1": ActorState(
+                player_id="player-1",
+                name="杜明",
+                source_character_id="character-1",
+                source_character_version=1,
+            )
+        },
+    )
+    store.register_room(module_content=module, initial_state=state)
+    engine = RuleEngineService(store)
+    view = await PlayerViewProjector(engine).project_scope(
+        PlayerViewScope(room_id="room-1", player_id="player-1", actor_id="actor-1")
+    )
+    model = CandidateOpeningModel(outcome)
+    app = build_session_view_application(
+        store, engine, settings=Settings(opening_narration_mode=mode), opening_narration_model=model
+    )
+    result = await app.generate_opening(view)
+    assert result.narration.text.startswith(module.opening_text)
+    assert "杜明" in result.narration.text
+    assert result.result == ("template" if mode == "template" else "fallback")
+    assert model.calls == (0 if mode == "template" else 1)
+
+
+def test_old_module_serialization_does_not_add_null_opening():
+    from collaboration_framework.contracts import ModuleContentV3
+
+    from app.service.builtin_module_loader import HAPPY_FROG_VILLAGE_SPEC
+
+    old = ModuleContentV3.model_validate_json(
+        HAPPY_FROG_VILLAGE_SPEC.source_path.read_text()
+    ).to_json_dict()
+    old.pop("opening_text")
+    module = ModuleContentV3.model_validate(old)
+    assert module.opening_text is None
+    assert module.to_json_dict() == old

@@ -193,16 +193,18 @@ class SessionViewApplication:
     ) -> OpeningGenerationResult:
         """Generate a validated opening, with a deterministic public fallback."""
 
-        context = ContextAssembler().for_opening(player_view)
+        opening_text = None
         addressing_mode = "second_person"
         try:
             async with self.store.transaction(player_view.room_id) as transaction:
                 runtime = await transaction.load_runtime()
+            opening_text = runtime.module_content.opening_text
             bound = [actor for actor in runtime.game_state.actors.values() if actor.player_id]
             if len(bound) >= 2:
                 addressing_mode = "named_actor"
         except Exception:  # noqa: BLE001 - 开场人数读失败时保持单人第二人称
             addressing_mode = "second_person"
+        context = ContextAssembler().for_opening(player_view, opening_text=opening_text)
         if addressing_mode != context.addressing_mode:
             context = context.model_copy(update={"addressing_mode": addressing_mode})
         started_at = time.perf_counter()
@@ -237,6 +239,7 @@ class SessionViewApplication:
             elapsed_ms=elapsed_ms,
             result=result,
             failure_category=failure_category,
+            opening_source="module" if opening_text else "legacy_missing_opening",
             input_chars=input_chars,
             output_chars=len(narration.text),
         )

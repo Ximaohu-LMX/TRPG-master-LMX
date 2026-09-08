@@ -3090,6 +3090,20 @@
       "title": "Background",
       "type": "string"
     },
+    "opening_text": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "当前默认起点可向全体玩家朗读的完整开场原文；缺省兼容旧版本。",
+      "title": "Opening Text"
+    },
     "information": {
       "default": [],
       "items": {

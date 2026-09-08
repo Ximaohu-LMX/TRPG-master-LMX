@@ -119,6 +119,7 @@ def entity(
     visibility: str = "public",
     voice_type: str | None = None,
     aliases: list[str] | None = None,
+    initial_custody: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """构造不会在运行时任意生成的 Canon Entity。"""
 
@@ -134,6 +135,8 @@ def entity(
         "plot_relevance": True,
         "lifecycle": "session",
     }
+    if initial_custody is not None:
+        payload["initial_custody"] = initial_custody
     if aliases:
         payload["player_visible_aliases"] = aliases
     if visible_when:
@@ -597,6 +600,20 @@ def build_entities() -> list[dict[str, Any]]:
             voice_type="zh_female_santongyongns_saturn_bigtts",
         ),
         entity(
+            "lane_butler", "莱恩家的管家",
+            "陪同莱恩先生接待调查员，补充詹姆斯最后出现的位置并递交传单。",
+            location="lane_manor", kind="npc",
+            voice_type="zh_male_ruyayichen_saturn_bigtts",
+        ),
+        entity(
+            "james_photo", "詹姆斯的照片", "照片上是一个笑容开朗的二十来岁青年。",
+            location="lane_manor", portable=True,
+        ),
+        entity(
+            "commission_envelope", "预付金信封", "桌上的厚信封，里面装有 100 美金。",
+            location="lane_manor", portable=True,
+        ),
+        entity(
             "lane_commission",
             "莱恩夫妇的委托",
             "寻找詹姆斯的正式委托。",
@@ -608,6 +625,7 @@ def build_entities() -> list[dict[str, Any]]:
             "设计精美、地址模糊的彩色传单。",
             location="lane_manor",
             portable=True,
+            initial_custody={"kind": "starting_actor"},
         ),
         entity(
             "missing_files",
@@ -1441,7 +1459,8 @@ def build_module() -> dict[str, Any]:
     return {
         "content_schema_version": 3,
         "module_id": "happy-frog-village",
-        "version": "3.0.10",
+        "version": "3.0.11",
+        "opening_text": '你们接到了一个找人的委托，来到了莱恩庄园，一位衣着华贵但面容憔悴的中年男人在管家的陪同下接待了你们。他是本市有名的企业家，理查德·莱恩先生。没有寒暄，他直接将一个厚厚的信封放在桌上，里面装有100美金。\n\n“我知道你们的本事和……收费。”他声音沙哑，开门见山。“我儿子，詹姆斯·莱恩，已经失踪一周了。这是预付金。找到他，把他安全地带回来，你们每人还能再拿到四百金币。”\n\n他推过来一张照片，上面是一个笑容开朗的二十来岁青年。\n\n“警方的常规搜寻毫无进展。他最后被看见，是独自一人往城郊的‘老林地’方向去了。在他房间的垃圾桶里，我们只找到了这个。”管家补充道，递过来一张被揉皱后又展平的彩色传单。',
         "world_ref": "coc-7e",
         "background": (
             "默认采用现代城郊。莱恩夫妇委托调查员寻找失踪的儿子詹姆斯，线索指向"
@@ -1792,6 +1811,7 @@ def provenance(module: dict[str, Any]) -> dict[str, Any]:
     return {
         "_comment": "来源段落为 python-docx Document.paragraphs 的 0-based 索引，供人工逐项核验。",
         "source": "模组幸福蛙蛙村.docx",
+        "opening_text": {'paragraph_indices': [51, 53, 55, 57], 'index_base': 0, 'selection': '默认起始路径的公开原文；保留作者措辞与单位，排除 KP 指导和其它分支。'},
         "paragraph_numbering": "python-docx Document.paragraphs 0-based index",
         "module_id": module["module_id"],
         "version": module["version"],

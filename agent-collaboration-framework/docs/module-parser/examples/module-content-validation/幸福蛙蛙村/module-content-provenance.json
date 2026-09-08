@@ -1,9 +1,19 @@
 {
   "_comment": "来源段落为 python-docx Document.paragraphs 的 0-based 索引，供人工逐项核验。",
   "source": "模组幸福蛙蛙村.docx",
+  "opening_text": {
+    "paragraph_indices": [
+      51,
+      53,
+      55,
+      57
+    ],
+    "index_base": 0,
+    "selection": "默认起始路径的公开原文；保留作者措辞与单位，排除 KP 指导和其它分支。"
+  },
   "paragraph_numbering": "python-docx Document.paragraphs 0-based index",
   "module_id": "happy-frog-village",
-  "version": "3.0.10",
+  "version": "3.0.11",
   "locations": {
     "lane_manor": [
       47,

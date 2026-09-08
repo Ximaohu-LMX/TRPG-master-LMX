@@ -119,6 +119,7 @@ class HappyFrogContentGateTests(unittest.TestCase):
             if entity.kind == "npc"
         }
         expected_ids = {
+            "lane_butler",
             "richard_lane",
             "mrs_lane",
             "villager_accounts",

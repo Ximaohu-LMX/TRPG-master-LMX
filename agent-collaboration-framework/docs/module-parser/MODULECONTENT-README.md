@@ -1,3 +1,5 @@
+> 当前运行时使用 ModuleContentV3；下文的旧 Draft/V1 接口仅供历史参考。正式开场提取见 [V3 开场原文](opening-text-v3.md)。
+
 # ModuleContent 字段决策：给团队的同步说明
 
 > 最终契约：[module-content-field-decisions.md](module-content-field-decisions.md)

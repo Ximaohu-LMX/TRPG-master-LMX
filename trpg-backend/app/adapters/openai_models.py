@@ -419,7 +419,11 @@ time_label 是模组允许玩家看到的**全部**时间信息。只能使用�
 
 _OPENING_NARRATION_INSTRUCTIONS = """\
 你是桌面角色扮演游戏的守秘人。只返回所要求的 JSON，并根据输入中已经过玩家安全
-投影的信息，写一段简洁、有画面感的公共开场。
+投影的信息适配公共开场。opening_text 非空时，它是模组作者的完整开场底稿：
+保留段落顺序、全部信息、人物关系、地点、数量、时间及对白含义；无需适配的句段尽量
+原样保留，不要概括或重构开场。只按 participants 轻微调整称呼、单复数、感知归属，
+自然补入姓名与公开职业，不增编经历，不因篇幅删减原文。只有旧模组缺少 opening_text
+时，才依据 scene 与 background 写兼容开场。
 
 正文必须逐字写出 participants 中每一位角色的完整姓名，并可使用其 occupation 与
 status_summary。姓名由玩家自己填写，可能不像常见人名（例如是一个词组或一句话）——
@@ -438,8 +442,8 @@ scene 和 background 只用于建立玩家已经可见的地点、时间、故�
 narrative_details 也只能按原意表达。只有单人开场才可能提供
 solo_background_summary，多人开场不得推断或补写任何角色的私密背景。
 
-不得创造门窗、路线、人物、物品、线索、秘密、规则结果或玩家行动，不得暗示角色已
-作出选择。输出 kind 必须为 narration，claimed_fact_ids 和 suggested_actions 必须
+不得在原文及公开资料以外创造门窗、路线、人物、物品、线索、秘密或规则结果；
+原文已经确定的开局经过可以保留，不得替玩家决定开场之后的行动。输出 kind 必须为 narration，claimed_fact_ids 和 suggested_actions 必须
 为空数组。text 只能包含自然的角色内叙事，不得包含 JSON、schema、字段名、Markdown
 代码块、协议说明或自检内容。
 若 addressing_mode 为 named_actor，不得用“你”或“您”称呼任何玩家角色，应使用

@@ -414,7 +414,8 @@ def build_module() -> dict[str, Any]:
     return {
         "content_schema_version": 3,
         "module_id": "silver-lock",
-        "version": "3.0.2",
+        "version": "3.0.3",
+        "opening_text": '天花板上陈旧发黄的灯管疲惫地闪着昏暗的光，如同经历了一场宿醉，你眼前的事物渐渐清晰。你试图用手支撑自己坐起来，但你意识到，你的手脚都被绳索捆住了。虽然绳索很细，但凭借你的力量是无法挣断的。你扭动着身子看向四周，你看到，这是一个大概十平米的房间，墙壁刷着银漆，房间里的陈设很简洁。不过现在，不是观察这些的时候。现在的当务之急是想办法解开绳索。你在心中做出了如上判断。\n\n你检查了自己身上，衣服完好无损，但随身物品只剩下一个铅笔刀。你想不起来你是怎么到这里来的，也不知道现在究竟过了多久。',
         "world_ref": "coc-7e",
         "background": "当代。单名调查员在昏暗的银色房间醒来，失去近期记忆且手脚被捆。叙事保持幽闭、失忆与超现实谜题交织的基调；芭斯特身份、银之锁原理、绑架者出现条件及抽屉内容在对应线索提交前不得泄露。",
         "information": info,
@@ -493,6 +494,7 @@ def provenance(module: dict[str, Any]) -> dict[str, Any]:
     return {
         "_comment": "本文件记录结构化内容对应的银之锁.docx非空段落号，供人工逐项复核。",
         "source": "银之锁.docx",
+        "opening_text": {'paragraph_indices': [10, 12], 'index_base': 0, 'selection': '默认起始路径的公开原文；保留作者措辞与单位，排除 KP 指导和其它分支。'},
         "paragraph_numbering": "解压 word/document.xml 后按非空 w:p 顺序从 1 编号",
         "module_id": module["module_id"],
         "version": module["version"],

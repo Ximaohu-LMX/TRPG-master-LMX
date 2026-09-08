@@ -987,6 +987,12 @@ class ModuleContentV3(ContractModel):
     version: str = Field(min_length=1, max_length=50)
     world_ref: str = Field(min_length=1, max_length=100)
     background: str = Field(min_length=1)
+    opening_text: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description="当前默认起点可向全体玩家朗读的完整开场原文；缺省兼容旧版本。",
+    )
 
     information: tuple[InformationSpecV3, ...] = ()
     knowledge_goals: tuple[KnowledgeGoalSpec, ...] = ()

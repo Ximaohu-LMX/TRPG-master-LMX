@@ -222,7 +222,9 @@ class OpeningNarratorTests(unittest.IsolatedAsyncioTestCase):
                 description="夜色笼罩着金博尔宅与通往公墓的道路，你可以在阴影中观察周围动静。",
             ),
             participants=(
-                OpeningParticipant(actor_id="actor-1", name="陈探员", occupation="警探"),
+                OpeningParticipant(
+                    actor_id="actor-1", name="陈探员", occupation="警探"
+                ),
                 OpeningParticipant(actor_id="actor-2", name="杜明", occupation="记者"),
             ),
             addressing_mode="named_actor",
@@ -246,10 +248,29 @@ class OpeningNarratorTests(unittest.IsolatedAsyncioTestCase):
                 description="夜色笼罩着金博尔宅与通往公墓的道路，你可以在阴影中观察周围动静。",
             ),
             participants=(
-                OpeningParticipant(actor_id="actor-1", name="陈探员", occupation="警探"),
+                OpeningParticipant(
+                    actor_id="actor-1", name="陈探员", occupation="警探"
+                ),
             ),
             addressing_mode="second_person",
         )
         text = deterministic_opening_narration(context).text
 
         self.assertIn("你可以在阴影中观察周围动静", text)
+
+
+class AuthoredOpeningTests(unittest.TestCase):
+    def test_source_survives_multiplayer_template_without_reconstruction(self):
+        source = (
+            "你醒来了。门外传来一句话：“请等候。”\n\n桌上有三封信，今晚之前不能打开。"
+        )
+        context = (
+            ContextAssembler()
+            .for_opening(player_view(multiplayer=True), opening_text=source)
+            .model_copy(update={"addressing_mode": "named_actor"})
+        )
+        output = deterministic_opening_narration(context)
+        self.assertTrue(output.text.startswith(source + "\n"))
+        self.assertIn("杜明", output.text)
+        self.assertIn("林夏", output.text)
+        self.assertNotIn("旧宅附近度过童年", output.text)
