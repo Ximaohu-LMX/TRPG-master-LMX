@@ -118,6 +118,7 @@ def entity(
     portable: bool = False,
     visibility: str = "public",
     voice_type: str | None = None,
+    aliases: list[str] | None = None,
 ) -> dict[str, Any]:
     """构造不会在运行时任意生成的 Canon Entity。"""
 
@@ -133,6 +134,8 @@ def entity(
         "plot_relevance": True,
         "lifecycle": "session",
     }
+    if aliases:
+        payload["player_visible_aliases"] = aliases
     if visible_when:
         payload["visibility_conditions"] = visible_when
     if portable:
@@ -576,6 +579,24 @@ def build_entities() -> list[dict[str, Any]]:
 
     return [
         entity(
+            "richard_lane",
+            "理查德·莱恩",
+            "莱恩先生，詹姆斯的父亲。与妻子在庄园接待调查员，委托他们寻找失踪一周的儿子，并等待调查员回来汇报。",
+            aliases=["莱恩先生", "理查德", "詹姆斯的父亲"],
+            location="lane_manor",
+            kind="npc",
+            voice_type="zh_male_ruyayichen_saturn_bigtts",
+        ),
+        entity(
+            "mrs_lane",
+            "莱恩夫人",
+            "詹姆斯的母亲。与丈夫在庄园等候儿子的消息，向调查员提供寻人委托中公开的情况。",
+            aliases=["莱恩太太", "詹姆斯的母亲"],
+            location="lane_manor",
+            kind="npc",
+            voice_type="zh_female_santongyongns_saturn_bigtts",
+        ),
+        entity(
             "lane_commission",
             "莱恩夫妇的委托",
             "寻找詹姆斯的正式委托。",
@@ -637,7 +658,9 @@ def build_entities() -> list[dict[str, Any]]:
             state={
                 "released": False,
                 "under_forced_custody": False,
-                "accompanying_party": False,
+                # 引擎保留键：为 True 时詹姆斯跟着队伍换场景，模组不必在每一条
+                # 移动规则里重复 move_entity（#516）。
+                "accompanying": False,
                 "alive": True,
             },
         ),
@@ -858,7 +881,7 @@ def build_rules() -> list[dict[str, Any]]:
             hints=["扛起詹姆斯", "拖着詹姆斯", "强行携带詹姆斯"],
             effects=[
                 set_state("james", "under_forced_custody", True),
-                set_state("james", "accompanying_party", True),
+                set_state("james", "accompanying", True),
             ],
         ),
         effect_rule(
@@ -869,7 +892,7 @@ def build_rules() -> list[dict[str, Any]]:
             target_id="james",
             option_id="stop-carrying-james",
             hints=["放下詹姆斯", "留下詹姆斯", "放弃携带詹姆斯"],
-            effects=[set_state("james", "accompanying_party", False)],
+            effects=[set_state("james", "accompanying", False)],
         ),
         effect_rule(
             "release_james_from_forced_custody",
@@ -881,7 +904,7 @@ def build_rules() -> list[dict[str, Any]]:
             hints=["释放詹姆斯", "给詹姆斯松绑", "解除对詹姆斯的物理控制"],
             effects=[
                 set_state("james", "under_forced_custody", False),
-                set_state("james", "accompanying_party", False),
+                set_state("james", "accompanying", False),
             ],
         ),
         effect_rule(
@@ -911,14 +934,18 @@ def build_rules() -> list[dict[str, Any]]:
             question_kind="intent_relation",
             effects=[
                 set_state("james", "under_forced_custody", True),
-                set_state("james", "accompanying_party", True),
-                {"type": "enter_location", "location_id": "outside"},
+                set_state("james", "accompanying", True),
+                # 先把人拖出去再走场景：这条规则也能从 resort_boundary 触发，那时
+                # 詹姆斯还在接待大厅，不算「与队伍同场景的随行者」，引擎的随行不会
+                # 也不该替这条规则把他从另一个房间捞过来。人已经在门外之后，随后的
+                # enter_location 就不再重复搬他一次（#516）。
                 {
                     "type": "move_entity",
                     "entity_id": "james",
                     "location_id": "outside",
                     "holder_actor_id": None,
                 },
+                {"type": "enter_location", "location_id": "outside"},
                 set_state("james", "alive", False),
                 reveal("james_forced_removal_tragedy"),
                 {"type": "mark_core_resolved"},
@@ -1147,7 +1174,7 @@ def build_rules() -> list[dict[str, Any]]:
                 set_state("resort_state", "victims_released", True),
                 set_state("james", "released", True),
                 set_state("james", "under_forced_custody", False),
-                set_state("james", "accompanying_party", False),
+                set_state("james", "accompanying", False),
                 reveal("messenger_convinced"),
                 reveal("victims_released"),
                 reveal("james_returns_home"),
@@ -1170,7 +1197,7 @@ def build_rules() -> list[dict[str, Any]]:
                 set_state("resort_state", "victims_released", True),
                 set_state("james", "released", True),
                 set_state("james", "under_forced_custody", False),
-                set_state("james", "accompanying_party", False),
+                set_state("james", "accompanying", False),
                 reveal("crystal_destroyed"),
                 reveal("victims_released"),
                 reveal("james_returns_home"),
@@ -1414,7 +1441,7 @@ def build_module() -> dict[str, Any]:
     return {
         "content_schema_version": 3,
         "module_id": "happy-frog-village",
-        "version": "3.0.8",
+        "version": "3.0.10",
         "world_ref": "coc-7e",
         "background": (
             "默认采用现代城郊。莱恩夫妇委托调查员寻找失踪的儿子詹姆斯，线索指向"
@@ -1828,6 +1855,7 @@ def review_markdown(module: dict[str, Any], source_map: dict[str, Any]) -> str:
 
 ## 稳定版主线
 
+- 莱恩先生与莱恩夫人是 lane_manor 的公开 NPC，接受询问并在调查员返回时仍在场（#518）。
 - 寻人委托、前期档案/村民调查、埃兹拉警告和度假村多地点调查均有正式目标。
 - 信使笔记与夜间仪式是水晶真相的两条来源；关键失败不会永久关闭主线。
 - 说服、水晶破坏和主动离开分别提交独立 Canon Information，再由 EndingDraft 选择锚点。

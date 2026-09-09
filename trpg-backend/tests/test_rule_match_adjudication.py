@@ -69,9 +69,9 @@ from app.core.action_plan_turn import (
     _deterministic_step_adjudication,
     _DeterministicStepAdjudicator,
     _match_travel_target,
+    _ModelStepAdjudicator,
     _normalize_single_travel_decision,
     _project_plan_prerequisite_facts,
-    _RuleFirstStepAdjudicator,
     build_action_plan_turn_application,
     build_rule_once_adjudication,
 )
@@ -374,15 +374,10 @@ async def test_fake_single_action_uses_the_same_rule_match_view() -> None:
     assert isinstance(decision.adjudication.check, RequiredAdjudicationCheck)
 
 
-async def test_rule_first_adjudicator_does_not_call_model_for_unique_match() -> None:
-    """线上裁决对唯一 Match View 候选也走确定性路径。"""
+async def test_fake_adjudicator_resolves_unique_match() -> None:
+    """Fake 对唯一 Match View 候选使用离线规则匹配。"""
 
-    class FailingFallback:
-        async def adjudicate(self, context):
-            del context
-            raise AssertionError("唯一规则候选不应调用模型")
-
-    adjudication = await _RuleFirstStepAdjudicator(FailingFallback()).adjudicate(
+    adjudication = await _DeterministicStepAdjudicator().adjudicate(
         await _cemetery_context("仔细观察守墓人")
     )
 
@@ -390,15 +385,10 @@ async def test_rule_first_adjudicator_does_not_call_model_for_unique_match() -> 
     assert adjudication.rule_decision.rule_id == "observe_caretaker"
 
 
-async def test_visible_dialogue_does_not_call_model_or_reveal_information() -> None:
+async def test_fake_visible_dialogue_does_not_reveal_information() -> None:
     """普通对话不应因二次模型调用失败，也不能绕过规则凭空揭示线索。"""
 
-    class FailingFallback:
-        async def adjudicate(self, context):
-            del context
-            raise AssertionError("可见人物的普通对话不应调用模型")
-
-    adjudication = await _RuleFirstStepAdjudicator(FailingFallback()).adjudicate(
+    adjudication = await _DeterministicStepAdjudicator().adjudicate(
         await _cemetery_context(
             "前往公墓，询问守墓人是否见过有人常来墓地",
             step_kind="dialogue",
@@ -415,7 +405,7 @@ async def test_visible_dialogue_does_not_call_model_or_reveal_information() -> N
     assert isinstance(adjudication.success_effects[0], NarrativeOnlyEffect)
 
 
-async def test_unknown_ordinary_travel_is_resolved_without_a_model_round_trip() -> None:
+async def test_fake_unknown_ordinary_travel_creates_runtime_location() -> None:
     """#212 普通动态地点要真的建出来。
 
     只靠提示词不管用：模型反复回答「阿诺兹堡没有挂牌的旅店」，玩家因此永远
@@ -423,17 +413,12 @@ async def test_unknown_ordinary_travel_is_resolved_without_a_model_round_trip() 
     地登记并进入，不再看模型脸色。
     """
 
-    class FailingFallback:
-        async def adjudicate(self, context):
-            del context
-            raise AssertionError("普通去处不应该还要问模型")
-
     context = await _cemetery_context(
         "我想去小镇上的旅馆休息到晚上",
         step_kind="travel",
         semantic_goal="前往小镇上的旅馆",
     )
-    adjudication = await _RuleFirstStepAdjudicator(FailingFallback()).adjudicate(context)
+    adjudication = await _DeterministicStepAdjudicator().adjudicate(context)
 
     assert [effect.type for effect in adjudication.success_effects] == [
         "ensure_runtime_location",
@@ -721,7 +706,7 @@ async def test_planner_cannot_invent_ambient_venue_for_npc_search() -> None:
             )
 
     fallback = RecordingFallback()
-    adjudication = await _RuleFirstStepAdjudicator(fallback).adjudicate(
+    adjudication = await _ModelStepAdjudicator(fallback).adjudicate(
         await _cemetery_context(
             "去找守墓人",
             step_kind="travel",
@@ -857,7 +842,7 @@ async def test_step_travel_rejects_known_location_substitution_for_unknown_desti
             )
 
     with pytest.raises(TurnExecutionError) as captured:
-        await _RuleFirstStepAdjudicator(WrongLocationFallback()).adjudicate(
+        await _ModelStepAdjudicator(WrongLocationFallback()).adjudicate(
             await _cemetery_context(
                 "去教堂看看",
                 step_kind="travel",
@@ -1214,6 +1199,21 @@ async def test_npc_single_intent_reaches_rule_match_after_safe_planning() -> Non
                         }
                     ],
                 }
+            if schema_name == "trpg_action_plan_step_adjudication":
+                context = ActionPlanStepContext.model_validate(input_payload)
+                assert context.keeper_capabilities is not None
+                candidate = next(
+                    rule
+                    for rule in context.keeper_capabilities.rule_candidates
+                    if rule.rule_id == "intimidate_caretaker"
+                )
+                return build_rule_once_adjudication(
+                    player_input=context.player_input,
+                    player_view=context.player_view,
+                    capabilities=context.keeper_capabilities,
+                    rule_id=candidate.rule_id,
+                    option_id=candidate.options[0].id,
+                ).to_json_dict()
             raise AssertionError(f"单意图不应调用 {schema_name}")
 
     client = RecordingClient()
@@ -1237,7 +1237,7 @@ async def test_npc_single_intent_reaches_rule_match_after_safe_planning() -> Non
     )
 
     assert result.status == "waiting_for_player"
-    assert client.schemas == ["trpg_turn_plan"]
+    assert client.schemas == ["trpg_turn_plan", "trpg_action_plan_step_adjudication"]
     run = await application.get_plan("issue-507-room", "issue-507-single-threat")
     assert run is not None
     adjudication = run.steps[0].adjudication
@@ -1247,8 +1247,8 @@ async def test_npc_single_intent_reaches_rule_match_after_safe_planning() -> Non
 
 
 @pytest.mark.asyncio
-async def test_single_travel_moves_named_companion_present_with_player() -> None:
-    """“带他”由裁决摘要消解后，身边 NPC 必须获得权威移动效果。"""
+async def test_single_travel_does_not_synthesize_companion_moves() -> None:
+    """旅行归一化不能根据玩家或模型文字自动搬运 NPC。"""
 
     context = await _cemetery_context(
         "带他去找守墓人",
@@ -1282,7 +1282,7 @@ async def test_single_travel_moves_named_companion_present_with_player() -> None
         for effect in normalized.adjudication.success_effects
         if isinstance(effect, MoveEntityEffect)
     )
-    assert moved == (MoveEntityEffect(entity_id="thomas", location_id="cemetery"),)
+    assert moved == ()
 
 
 async def test_ambient_venue_never_shadows_an_authored_location() -> None:
@@ -1310,7 +1310,7 @@ async def test_ambient_venue_never_shadows_an_authored_location() -> None:
 
     fallback = RecordingFallback()
     with pytest.raises(TurnExecutionError) as captured:
-        await _RuleFirstStepAdjudicator(fallback).adjudicate(
+        await _ModelStepAdjudicator(fallback).adjudicate(
             await _cemetery_context(
                 "我想去地下酒吧",
                 step_kind="travel",

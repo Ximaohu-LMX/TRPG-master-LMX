@@ -331,9 +331,7 @@ def _visible_entities(
             # Canon 物品的 ItemCustody 是权威位置，避免同一物品同时出现在背包和场景。
             if item.custody.kind == "actor_inventory":
                 continue
-            placed = (
-                item.custody.ref_id if item.custody.kind == "location" else None
-            )
+            placed = item.custody.ref_id if item.custody.kind == "location" else None
             carried = None
         else:
             placed = _optional_text(overrides.get("location_id")) or entity.located_in
@@ -391,10 +389,14 @@ def _public_entity_state(
 ) -> tuple[ProjectionObservableState, ...]:
     """只投影由公开标准效果登记过的状态键，避免把模组隐藏状态带给模型。"""
 
-    keys = state.public_entity_state_keys.get(entity_id, ())
+    keys = set(state.public_entity_state_keys.get(entity_id, ()))
+    # 随行是可见实体的公开关系，包括模组初始化时声明的值；不能等到第一次
+    # change_entity_state 才让主持人知道它。其余模组私有状态仍须显式公开。
+    if isinstance(values.get("accompanying"), bool):
+        keys.add("accompanying")
     return tuple(
         ProjectionObservableState(key=key, label=key, value=values[key])
-        for key in keys
+        for key in sorted(keys)
         if key in PUBLIC_STATE_KEYS and key in values
     )
 

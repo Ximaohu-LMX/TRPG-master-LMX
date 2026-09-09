@@ -59,11 +59,13 @@ logger = structlog.get_logger()
 _HOST_TURN_DECISION_ADAPTER = TypeAdapter(HostTurnDecision)
 
 _SAFE_ADJUDICATION_INSTRUCTIONS = """
-叙事、对话、确认和任何没有权威状态变化的动作只能使用 narrative_only。检定候选只能
-引用 self_actor.skills 中实际存在的技能。无法形成安全裁决时不得编造目标或效果。
+只有不产生权威状态变化的裁决才使用 narrative_only；对话或确认的表达形式不决定效果。
+结合模组、当前状态与互动历史判断行动结果及是否需要检定，在同一次裁决中绑定检定与
+成功、失败效果。检定候选只能引用 self_actor.skills 中实际存在的技能。
+无法形成安全裁决时不得编造目标或效果。
 
 每个新 ActionAdjudication 都必须显式输出 persistence_intent。它是稳定的机器标识，
-不随玩家语言变化：普通对话、观察及纯叙事为 none；角色状态为 character_state；物体
+不随玩家语言变化：无持久结果为 none；角色状态为 character_state；物体
 状态为 object_state；背包变化为 inventory；移动到地点为 location。需要持久结果时，
 method.family 也使用下列稳定值并生成精确匹配的成功效果：击晕=knock_out
 （consciousness=unconscious）、击倒=knock_down（posture=prone）、束缚=restrain
@@ -72,6 +74,8 @@ method.family 也使用下列稳定值并生成精确匹配的成功效果：击
 拾取=pick_up、转交=transfer、丢下=drop、消耗=consume、前往=travel。不得把这些动作
 标成 none，也不得只给 narrative_only。命中模组 rule_decision 时仍显式填写最贴近的
 persistence_intent，但 success_effects/failure_effects 按规则所有权要求留空。
+其他角色状态变化使用 method.family=action，由 character_state 和对应状态效果表达；
+标准公开角色状态不要求在 NPC 初始 state 中预先赋值。
 上述 open/close/lock 等物体动作族只适用于一个已存在的物理实体确实改变
 对应状态的情况。自然语言中同一动词的服务请求、惯用语或抽象含义，不得映射成
 物体 open；若没有单独建模的权威状态，使用 method.family=action、
@@ -207,6 +211,12 @@ keeper_capabilities 时，只能使用 enter_location 与 narrative_only。
   一个 move_entity，把 holder_actor_id 设为 self_actor.id。这样物品才会进入背包。新实体在
   提交前尚不存在，因此 target 必须保持为当前 player_view.scene.id 的 location，绝不能把新
   entity_id 当作 target。
+- NPC 持续随队同行使用公开布尔状态 accompanying。结合模组、当前情境和互动历史
+  判断意愿；普通请求未判断出不愿意时默认同意，判断不愿意则拒绝。强制行为由你判断
+  所需检定，并将建立随行绑定到成功结果。适用规则的检定和效果仍由规则拥有；自由
+  裁决以 NPC 为 target、persistence_intent=character_state，使用
+  change_entity_state(accompanying=true/false)。否定不能变成肯定。已随行的 NPC 由
+  enter_location 自动跟到队伍实际到达的位置，不得为随行再追加 move_entity。
 - move_entity：让 NPC/实体换地点，或改变物品 custody。拾取、保留或转交物品时使用
   holder_actor_id；把投掷、放置、丢弃后的物品留在当前场景时使用 location_id。
   玩家拾取、转交、丢下或消费物品时，entity_id 只能取自 player_view.scene.loose_items[].id、
@@ -275,9 +285,8 @@ change_entity_state）；但不要为了内部写入次数把一个意图拆成�
    - `requires_check=false`：用 `NoAdjudicationCheck`。这类选项（例如 `proceed`）
      表示"就这么做"，本来就不掷骰，**不要**为了凑格式编一个技能出来。
    - `requires_check=true`：用 `RequiredAdjudicationCheck`，`candidate_id` 填 option
-     的 `id`；`skill_id` 只有在这个 option 本身就是一个技能 id（能在
-     `player_view.self_actor.skills[]` 里逐字找到）时才填它，否则填该角色实际会用到
-     的那个技能 id。option id 不是技能名，`STR`、`proceed` 这类值不能当技能提交。
+     的 `id`；`skill_id` 使用该 option 的 `check_skill_id`，它是规则声明的技能或属性。
+     option id 不是技能名，不得将 proceed 等不透明 id 当作技能或自选另一个技能。
 4. `success_effects` 与 `failure_effects` **一律留空**。点名一条规则就等于把后果的
    所有权交给了它：规则自己拥有检定结果与状态变更，你另外写的效果会被忽略。
 
@@ -619,7 +628,8 @@ class PromptHostEntryModel:
 
     _INSTRUCTIONS = """你是桌面角色扮演游戏的主持入口分流器。只返回 schema 要求的 JSON。
 只有明确、低风险、无需检定、不会改变权威状态的普通互动（例如礼貌招呼）才返回
-direct_response，并给出一句简短自然的即时回应。
+direct_response，并给出一句简短自然的即时回应。以对话或请求形式表达的行动，若结果
+会持续影响游戏状态，仍须 delegate_to_legacy，由后续裁决决定结果，不能只口头答应。
 当公开上下文不足以唯一确定玩家下一步要碰的对象或行动时，返回
 needs_clarification，text 只问一句简短公开问题。未消解的指代（那个/它/哪一个）、
 缺对象、多名可见人物或多件可见物品导致不同选择会造成重要差异，都属于信息不足；

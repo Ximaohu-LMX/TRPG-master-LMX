@@ -1,7 +1,7 @@
 {
   "content_schema_version": 3,
   "module_id": "happy-frog-village",
-  "version": "3.0.8",
+  "version": "3.0.10",
   "world_ref": "coc-7e",
   "background": "默认采用现代城郊。莱恩夫妇委托调查员寻找失踪的儿子詹姆斯，线索指向不存在于官方记录的蛙蛙度假村。叙事从温馨田园与整齐笑容逐渐滑向梦境、身体异变和选择权被剥夺的恐怖；信使本体、青蛙来源和水晶弱点只能随权威信息揭示。",
   "information": [
@@ -930,6 +930,57 @@
   ],
   "entities": [
     {
+      "id": "richard_lane",
+      "kind": "npc",
+      "origin": "canon",
+      "name": "理查德·莱恩",
+      "player_visible_name": "理查德·莱恩",
+      "player_visible_aliases": [
+        "莱恩先生",
+        "理查德",
+        "詹姆斯的父亲"
+      ],
+      "description": "莱恩先生，詹姆斯的父亲。与妻子在庄园接待调查员，委托他们寻找失踪一周的儿子，并等待调查员回来汇报。",
+      "located_in": "lane_manor",
+      "relations": [],
+      "state": {},
+      "item_component": null,
+      "voice": {
+        "provider": "doubao",
+        "resource_id": "seed-tts-2.0",
+        "voice_type": "zh_male_ruyayichen_saturn_bigtts"
+      },
+      "visibility": "public",
+      "visibility_conditions": [],
+      "plot_relevance": true,
+      "lifecycle": "session"
+    },
+    {
+      "id": "mrs_lane",
+      "kind": "npc",
+      "origin": "canon",
+      "name": "莱恩夫人",
+      "player_visible_name": "莱恩夫人",
+      "player_visible_aliases": [
+        "莱恩太太",
+        "詹姆斯的母亲"
+      ],
+      "description": "詹姆斯的母亲。与丈夫在庄园等候儿子的消息，向调查员提供寻人委托中公开的情况。",
+      "located_in": "lane_manor",
+      "relations": [],
+      "state": {},
+      "item_component": null,
+      "voice": {
+        "provider": "doubao",
+        "resource_id": "seed-tts-2.0",
+        "voice_type": "zh_female_santongyongns_saturn_bigtts"
+      },
+      "visibility": "public",
+      "visibility_conditions": [],
+      "plot_relevance": true,
+      "lifecycle": "session"
+    },
+    {
       "id": "lane_commission",
       "kind": "object",
       "origin": "canon",
@@ -1088,7 +1139,7 @@
       "state": {
         "released": false,
         "under_forced_custody": false,
-        "accompanying_party": false,
+        "accompanying": false,
         "alive": true
       },
       "item_component": null,
@@ -2884,7 +2935,7 @@
             "effect": {
               "type": "change_entity_state",
               "entity_id": "james",
-              "key": "accompanying_party",
+              "key": "accompanying",
               "value": true
             },
             "next_step_id": "finish"
@@ -2958,7 +3009,7 @@
             "effect": {
               "type": "change_entity_state",
               "entity_id": "james",
-              "key": "accompanying_party",
+              "key": "accompanying",
               "value": false
             },
             "next_step_id": "finish"
@@ -3043,7 +3094,7 @@
             "effect": {
               "type": "change_entity_state",
               "entity_id": "james",
-              "key": "accompanying_party",
+              "key": "accompanying",
               "value": false
             },
             "next_step_id": "finish"
@@ -3144,7 +3195,7 @@
             "effect": {
               "type": "change_entity_state",
               "entity_id": "james",
-              "key": "accompanying_party",
+              "key": "accompanying",
               "value": true
             },
             "next_step_id": "effect_2"
@@ -3153,8 +3204,10 @@
             "id": "effect_2",
             "kind": "effect",
             "effect": {
-              "type": "enter_location",
-              "location_id": "outside"
+              "type": "move_entity",
+              "entity_id": "james",
+              "location_id": "outside",
+              "holder_actor_id": null
             },
             "next_step_id": "effect_3"
           },
@@ -3162,10 +3215,8 @@
             "id": "effect_3",
             "kind": "effect",
             "effect": {
-              "type": "move_entity",
-              "entity_id": "james",
-              "location_id": "outside",
-              "holder_actor_id": null
+              "type": "enter_location",
+              "location_id": "outside"
             },
             "next_step_id": "effect_4"
           },
@@ -4752,7 +4803,7 @@
             "effect": {
               "type": "change_entity_state",
               "entity_id": "james",
-              "key": "accompanying_party",
+              "key": "accompanying",
               "value": false
             },
             "next_step_id": "success_5"
@@ -4934,7 +4985,7 @@
             "effect": {
               "type": "change_entity_state",
               "entity_id": "james",
-              "key": "accompanying_party",
+              "key": "accompanying",
               "value": false
             },
             "next_step_id": "effect_6"

@@ -166,6 +166,7 @@ from app.dto.ws import (
 from app.models.engine import (
     ActionPlanRunRecord,
     GameSession,
+    HostActionQueueItem,
     RoomActionReservation,
     SceneTransitionProposalRecord,
     TimeAdvanceProposalRecord,
@@ -1411,6 +1412,107 @@ async def _route_keeper_queue_item(db: AsyncSession, item, view: PlayerView) -> 
     return route
 
 
+async def _start_keeper_action(
+    item: HostActionQueueItem, websocket: WebSocket | None
+) -> ActionPlanTurnResult:
+    """Execute the frozen keeper route identically for immediate and queued turns."""
+
+    route = host_action_queue_service.effective_execution_route(item)
+    on_progress = partial(_send_plan_progress, websocket)
+    on_phase = partial(_send_turn_phase, websocket, item.client_action_id)
+    if route == "rule_once":
+        view = await session_view_application.current_player_view(
+            room_id=item.room_id,
+            player_id=item.player_id,
+        )
+        if view.self_actor.id != item.actor_id:
+            raise ValueError("RULE_ACTOR_MISMATCH")
+        # A committed rule advances the revision and may remove its own candidate.
+        # Resume its durable run before validating conditions for a new execution.
+        existing = await action_plan_turn_application.get_plan(item.room_id, item.client_action_id)
+        if existing is not None:
+            return await action_plan_turn_application.resume_owned(
+                room_id=item.room_id,
+                player_id=item.player_id,
+                parent_action_id=item.client_action_id,
+                on_progress=on_progress,
+                on_phase=on_phase,
+            )
+        request = item.rule_request_json or {}
+        if request.get("source_revision") != view.revision:
+            raise ValueError("RULE_SOURCE_REVISION_STALE")
+        player_input = PlayerInput(
+            room_id=item.room_id,
+            player_id=item.player_id,
+            actor_id=item.actor_id,
+            client_action_id=item.client_action_id,
+            utterance=item.utterance,
+        )
+        capabilities = await action_plan_turn_application._keeper_capabilities(player_input, view)
+        if capabilities is None:
+            raise ValueError("RULE_CAPABILITIES_UNAVAILABLE")
+        adjudication = build_rule_once_adjudication(
+            player_input=player_input,
+            player_view=view,
+            capabilities=capabilities,
+            rule_id=str(request.get("rule_id") or ""),
+            option_id=str(request.get("option_id") or ""),
+            target_kind=request.get("target_kind"),
+            target_id=request.get("target_id"),
+            summary=request.get("summary"),
+        )
+        return await action_plan_turn_application.start_rule_once(
+            room_id=item.room_id,
+            player_id=item.player_id,
+            client_action_id=item.client_action_id,
+            utterance=item.utterance,
+            adjudication=adjudication,
+            on_progress=on_progress,
+            on_phase=on_phase,
+        )
+    if route == "delegate_to_legacy":
+        continuation = (item.continuation_text or "").strip()
+        return await action_plan_turn_application.start(
+            room_id=item.room_id,
+            player_id=item.player_id,
+            client_action_id=item.client_action_id,
+            utterance=(
+                f"{item.utterance}\n玩家补充：{continuation}" if continuation else item.utterance
+            ),
+            interlocutor_id=None,
+            interlocutor_name=None,
+            on_progress=on_progress,
+            on_phase=on_phase,
+            on_input_accepted=None,
+        )
+    raise RuntimeError(f"Unsupported keeper execution route: {route}")
+
+
+def _is_rule_rejection(item: HostActionQueueItem | None, exc: Exception) -> bool:
+    return (
+        item is not None
+        and item.recipient_kind == "keeper"
+        and host_action_queue_service.effective_execution_route(item) == "rule_once"
+        and (
+            (isinstance(exc, ValueError) and str(exc).startswith("RULE_"))
+            or (isinstance(exc, TurnExecutionError) and exc.code.startswith("RULE_"))
+        )
+    )
+
+
+async def _reject_rule_host_action(
+    db: AsyncSession, item: HostActionQueueItem, websocket: WebSocket | None
+) -> None:
+    await _persist_rule_rejection(db, item)
+    await _recover_persisted_turn_narration(
+        db,
+        websocket,
+        room_id=item.room_id,
+        player_id=item.player_id,
+        client_action_id=item.client_action_id,
+    )
+
+
 async def _drain_host_action_queue(room_id: str) -> None:
     async with _host_drain_lock(room_id):
         while True:
@@ -1493,93 +1595,7 @@ async def _drain_host_action_queue(room_id: str) -> None:
                     if route == "direct_response":
                         await _run_direct_host_action(db, item, view, websocket)
                         continue
-                    if route == "rule_once":
-                        request = item.rule_request_json or {}
-                        view = await session_view_application.current_player_view(
-                            room_id=room_id,
-                            player_id=item.player_id,
-                        )
-                        if view.self_actor.id != item.actor_id:
-                            raise ValueError("RULE_ACTOR_MISMATCH")
-                        if request.get("source_revision") != view.revision:
-                            raise ValueError("RULE_SOURCE_REVISION_STALE")
-                        player_input = PlayerInput(
-                            room_id=room_id,
-                            player_id=item.player_id,
-                            actor_id=item.actor_id,
-                            client_action_id=item.client_action_id,
-                            utterance=item.utterance,
-                        )
-                        capabilities = await action_plan_turn_application._keeper_capabilities(
-                            player_input,
-                            view,
-                        )
-                        if capabilities is None:
-                            raise ValueError("RULE_CAPABILITIES_UNAVAILABLE")
-                        adjudication = build_rule_once_adjudication(
-                            player_input=player_input,
-                            player_view=view,
-                            capabilities=capabilities,
-                            rule_id=str(request.get("rule_id") or ""),
-                            option_id=str(request.get("option_id") or ""),
-                            target_kind=request.get("target_kind"),
-                            target_id=request.get("target_id"),
-                            summary=request.get("summary"),
-                        )
-                        result = await action_plan_turn_application.start_rule_once(
-                            room_id=room_id,
-                            player_id=item.player_id,
-                            client_action_id=item.client_action_id,
-                            utterance=item.utterance,
-                            adjudication=adjudication,
-                            on_progress=lambda event, target=websocket: _send_plan_progress(
-                                target,
-                                event,
-                            ),
-                            on_phase=partial(
-                                _send_turn_phase,
-                                websocket,
-                                item.client_action_id,
-                            ),
-                        )
-                        await host_action_queue_service.mark_started(db, item)
-                        await _send_action_plan_result(
-                            db,
-                            websocket,
-                            room_id,
-                            item.player_id,
-                            result,
-                        )
-                        if result.waiting_for_player:
-                            return
-                        continue
-                    # delegate_to_legacy intentionally enters the unchanged
-                    # ActionPlan application below.
-                    interlocutor_id = None
-                    interlocutor_name = None
-                    continuation = (item.continuation_text or "").strip()
-                    result = await action_plan_turn_application.start(
-                        room_id=room_id,
-                        player_id=item.player_id,
-                        client_action_id=item.client_action_id,
-                        utterance=(
-                            f"{item.utterance}\n玩家补充：{continuation}"
-                            if continuation
-                            else item.utterance
-                        ),
-                        interlocutor_id=interlocutor_id,
-                        interlocutor_name=interlocutor_name,
-                        on_progress=lambda event, target=websocket: _send_plan_progress(
-                            target,
-                            event,
-                        ),
-                        on_phase=partial(
-                            _send_turn_phase,
-                            websocket,
-                            item.client_action_id,
-                        ),
-                        on_input_accepted=None,
-                    )
+                    result = await _start_keeper_action(item, websocket)
                     await host_action_queue_service.mark_started(db, item)
                     await _send_action_plan_result(
                         db,
@@ -1591,17 +1607,8 @@ async def _drain_host_action_queue(room_id: str) -> None:
                     if result.waiting_for_player:
                         return
                 except Exception as exc:
-                    if (
-                        item.recipient_kind == "keeper"
-                        and host_action_queue_service.effective_execution_route(item) == "rule_once"
-                        and (
-                            isinstance(exc, ValueError)
-                            or (
-                                isinstance(exc, TurnExecutionError) and exc.code.startswith("RULE_")
-                            )
-                        )
-                    ):
-                        await _persist_rule_rejection(db, item)
+                    if _is_rule_rejection(item, exc):
+                        await _reject_rule_host_action(db, item, websocket)
                         continue
                     # A direct response commits its Event and queue completion before
                     # any socket/broadcast work.  Delivery failures must therefore
@@ -2294,6 +2301,15 @@ async def _recover_persisted_turn_narration(
         ):
             return False
         actor_id = active.actor_id
+    elif (
+        queued_item is not None
+        and queued_item.status == "completed"
+        and host_action_queue_service.effective_execution_route(queued_item) == "rule_once"
+    ):
+        # Rejected frozen rules have a durable narration but never create a run.
+        if queued_item.player_id != player_id:
+            raise ContractError("持久化规则结果不属于当前玩家")
+        actor_id = queued_item.actor_id
     else:
         recovery = await legacy_single_action_recovery.recover(
             GetAdjudicationStatusRequest(
@@ -3737,7 +3753,6 @@ async def room_socket(websocket: WebSocket, room_id: str, token: str | None = No
                             )
                             turn_started_at = time.monotonic()
                             await _broadcast_room_action_state(db, room_id)
-                            keeper_utterance = submit_payload.utterance
                             if submit_payload.recipient.kind == "keeper" and not resuming_own_plan:
                                 await _enqueue_host_action(
                                     db,
@@ -3786,47 +3801,45 @@ async def room_socket(websocket: WebSocket, room_id: str, token: str | None = No
                                             db, queued_item, action_view, websocket
                                         )
                                         continue
-                                    continuation = (queued_item.continuation_text or "").strip()
-                                    if continuation:
-                                        keeper_utterance = (
-                                            f"{queued_item.utterance}\n玩家补充：{continuation}"
+                            if queued_item is not None:
+                                result = await _start_keeper_action(queued_item, websocket)
+                            else:
+                                result = await action_plan_turn_application.start(
+                                    room_id=room_id,
+                                    player_id=bound_player_id,
+                                    client_action_id=submit_payload.client_action_id,
+                                    utterance=submit_payload.utterance,
+                                    interlocutor_id=(
+                                        submit_payload.recipient.entity_id
+                                        if submit_payload.recipient.kind == "npc"
+                                        else None
+                                    ),
+                                    interlocutor_name=(
+                                        require_dialogue_npc(
+                                            action_view,
+                                            submit_payload.recipient.entity_id or "",
+                                        ).name
+                                        if submit_payload.recipient.kind == "npc"
+                                        else None
+                                    ),
+                                    on_progress=lambda event: _send_plan_progress(
+                                        websocket,
+                                        event,
+                                    ),
+                                    on_phase=partial(
+                                        _send_turn_phase,
+                                        websocket,
+                                        submit_payload.client_action_id,
+                                    ),
+                                    on_input_accepted=(
+                                        None
+                                        if queued_item is not None or resuming_own_plan
+                                        else partial(
+                                            _broadcast_action_utterance,
+                                            db,
                                         )
-                            result = await action_plan_turn_application.start(
-                                room_id=room_id,
-                                player_id=bound_player_id,
-                                client_action_id=submit_payload.client_action_id,
-                                utterance=keeper_utterance,
-                                interlocutor_id=(
-                                    submit_payload.recipient.entity_id
-                                    if submit_payload.recipient.kind == "npc"
-                                    else None
-                                ),
-                                interlocutor_name=(
-                                    require_dialogue_npc(
-                                        action_view,
-                                        submit_payload.recipient.entity_id or "",
-                                    ).name
-                                    if submit_payload.recipient.kind == "npc"
-                                    else None
-                                ),
-                                on_progress=lambda event: _send_plan_progress(
-                                    websocket,
-                                    event,
-                                ),
-                                on_phase=partial(
-                                    _send_turn_phase,
-                                    websocket,
-                                    submit_payload.client_action_id,
-                                ),
-                                on_input_accepted=(
-                                    None
-                                    if queued_item is not None or resuming_own_plan
-                                    else partial(
-                                        _broadcast_action_utterance,
-                                        db,
-                                    )
-                                ),
-                            )
+                                    ),
+                                )
                             if queued_item is not None:
                                 await host_action_queue_service.mark_started(db, queued_item)
                             narration_ready_ms = (
@@ -3869,6 +3882,9 @@ async def room_socket(websocket: WebSocket, room_id: str, token: str | None = No
                                 end_to_end_ms=completed_ms,
                             )
                         except Exception as exc:
+                            if queued_item is not None and _is_rule_rejection(queued_item, exc):
+                                await _reject_rule_host_action(db, queued_item, websocket)
+                                continue
                             host_turn_failed = True
                             if queued_item is not None and queued_item.status == "processing":
                                 try:
