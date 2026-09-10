@@ -896,6 +896,171 @@
   overscroll-behavior: contain;
 }
 
+.room-play__bottom-panel--map {
+  overflow: hidden;
+  padding-top: 2.75rem;
+}
+
+.room-play__bottom-panel--map > .room-play__bottom-panel-content {
+  max-height: calc(70vh - 6.5rem) !important;
+  max-height: calc(70dvh - 6.5rem) !important;
+  overscroll-behavior: contain;
+}
+
+.room-play__bottom-panel,
+.room-play__toolbar {
+  --room-information-red: #b0443e;
+}
+
+.room-play__toolbar-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.room-play__unread-dot {
+  display: inline-block;
+  width: 0.4rem;
+  height: 0.4rem;
+  margin-left: 0.35rem;
+  flex: 0 0 0.4rem;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: var(--room-information-red);
+}
+
+.room-play__information-section {
+  padding: 0.45rem 0 0.65rem;
+  border-top: 1px solid rgb(157 106 45 / 24%);
+}
+
+.room-play__information-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  min-width: 0;
+  min-height: 2.5rem;
+  padding: 0.4rem 0.25rem;
+  color: #49321c;
+  text-align: left;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.room-play__information-name {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.room-play__information-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.room-play__information-name > .room-play__unread-dot {
+  margin-left: 0;
+}
+
+.room-play__information-summary > svg,
+.room-play__location-branch > svg {
+  width: 0.9rem;
+  height: 0.9rem;
+  flex-shrink: 0;
+  color: #856a47;
+}
+
+.room-play__information-summary > svg {
+  transform: rotate(-90deg);
+}
+
+.room-play__information-summary > svg.is-expanded {
+  transform: rotate(0);
+}
+
+.room-play__location-branch > svg.is-expanded {
+  transform: rotate(90deg);
+}
+
+.room-play__information-summary:focus-visible,
+.room-play__location-branch:focus-visible {
+  outline: 2px solid #856a47;
+  outline-offset: 2px;
+  border-radius: 0.2rem;
+}
+
+.room-play__information-list,
+.room-play__location-tree {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.room-play__information-entry,
+.room-play__location-entry {
+  min-width: 0;
+  padding: 0 0.5rem;
+  border: 1px solid rgb(157 106 45 / 16%);
+  border-radius: 0.3rem;
+  background: rgb(255 250 232 / 36%);
+}
+
+.room-play__information-entry > .room-play__information-content,
+.room-play__location-description {
+  padding: 0 0.25rem 0.65rem;
+  color: #796449;
+  font-size: 0.73rem;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.room-play__location-row {
+  display: flex;
+  align-items: center;
+}
+
+.room-play__location-branch,
+.room-play__location-branch-spacer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  flex: 0 0 1.5rem;
+}
+
+.room-play__location-branch {
+  min-height: 2.5rem;
+}
+
+.room-play__location-entry.is-current {
+  border-color: rgb(74 138 74 / 28%);
+  background: rgb(74 138 74 / 6%);
+}
+
+.room-play__location-status {
+  padding: 0 0.25rem 0.4rem 1.75rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+}
+
+.room-play__location-description {
+  padding-left: 1.75rem;
+}
+
+.room-play__location-blocked {
+  color: var(--room-information-red);
+}
+
+.room-play__notes-heading {
+  padding: 0.9rem 0 0.7rem;
+  color: #49321c;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
 /* 连续幸运骰占手机框 72%，确保结果和确认按钮无需滚动即可同时看到。 */
 .room-play__bottom-panel--sequential-dice {
   height: 72% !important;
