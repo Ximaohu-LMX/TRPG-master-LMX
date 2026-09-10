@@ -478,6 +478,30 @@ class ActionPlanNarrationContext(ContractModel):
     # 仅供服务端输出校验使用；该索引被排除在模型 payload 外，避免反向泄漏。
     forbidden_disclosure_terms: tuple[str, ...] = Field(default=(), exclude=True)
 
+    def to_prompt_dict(self) -> JsonObject:
+        """Keep scene and committed facts; omit choices and duplicate source bodies."""
+
+        payload = self.to_json_dict()
+        view = self.player_view.to_json_dict()
+        view.pop("background")
+        view.pop("checkpoint_options")
+        information_ids = {
+            item.subject_id
+            for item in self.narration_evidence
+            if item.kind == "information_revealed"
+        }
+        view["known_information"] = [
+            item.to_json_dict()
+            for item in self.player_view.known_information
+            if item.id not in information_ids
+        ]
+        payload["player_view"] = view
+        payload["completed_steps"] = [
+            step.model_dump(mode="json", exclude={"narration_evidence"})
+            for step in self.completed_steps
+        ]
+        return payload
+
     @model_validator(mode="after")
     def validate_narration_scope(self) -> ActionPlanNarrationContext:
         if (

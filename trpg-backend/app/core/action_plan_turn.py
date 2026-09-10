@@ -1928,9 +1928,10 @@ class ActionPlanTurnApplication:
                     context = context.model_copy(
                         update={
                             "narration_retry_hint": (
-                                "上一版叙事遗漏了已提交的玩家可见结果："
+                                "上一版叙事未交代或未引用本次必写的公开结果："
                                 + "、".join(item.subject_name for item in missing)
-                                + "。必须在正文明确写出，并 claim 对应 evidence ref。"
+                                + "。按 narration_evidence.description 的原意自然写入正文，"
+                                "保留数量、否定与条件，并 claim 对应 evidence ref；无需照抄原文。"
                             )
                         }
                     )
@@ -1938,8 +1939,9 @@ class ActionPlanTurnApplication:
                     context = context.model_copy(
                         update={
                             "narration_retry_hint": (
-                                f"已实际抵达{context.player_view.scene.name}。请在正文写出该地点，"
-                                "依据最终场景的公开描述、人物、物件和出口介绍现场。"
+                                f"已实际抵达{context.player_view.scene.name}。请自然交代抵达后的现场，"
+                                "并在 claimed_evidence_refs 引用对应的 location 结果；"
+                                "依据最终场景的公开描述、人物、物件和出口展开。"
                             )
                         }
                     )
@@ -2133,8 +2135,29 @@ class ActionPlanTurnApplication:
         remaining = "".join(kept).strip()
         if not remaining:
             return None
+        # Removing a sentence invalidates the model's acknowledgement of a
+        # paraphrased fact or arrival. Revalidation must recover the source text
+        # or destination name; otherwise keep results through the existing fallback.
+        source_refs = {
+            item.ref
+            for item in getattr(context, "narration_evidence", ())
+            if item.kind == "information_revealed" and item.required_in_narration
+        } | {
+            result.event_ref
+            for step in context.completed_steps
+            for result in step.committed_results
+            if result.kind == "location"
+        }
+        candidate = output.model_copy(
+            update={
+                "text": remaining,
+                "claimed_evidence_refs": tuple(
+                    ref for ref in output.claimed_evidence_refs if ref not in source_refs
+                ),
+            }
+        )
         try:
-            degraded = validate(context, output.model_copy(update={"text": remaining}))
+            degraded = validate(context, candidate)
         except ActionPlanNarrationValidationError:
             # 剩余正文仍不合规就不再逐句剥了：继续剥下去等于用未校验的碎片拼
             # 输出，安全保证只对整段成立。
@@ -2260,16 +2283,22 @@ class ActionPlanTurnApplication:
         )
         if arrivals:
             scene = context.player_view.scene
-            statements.insert(
-                0, f"{_acting_address(context)}已经抵达{scene.name}。{scene.description}"
-            )
-            if scene.visible_entities:
-                statements.append(
-                    "周围可见：" + "、".join(item.name for item in scene.visible_entities) + "。"
-                )
+            statements.insert(0, f"{_acting_address(context)}来到{scene.name}。{scene.description}")
+            people = [
+                item.name for item in scene.visible_entities if getattr(item, "kind", None) == "npc"
+            ]
+            objects = [
+                item.name for item in scene.visible_entities if getattr(item, "kind", None) != "npc"
+            ]
+            if people:
+                statements.append("、".join(people) + "在这里。")
+            if objects:
+                statements.append("周围还有" + "、".join(objects) + "。")
             if scene.available_exits:
                 statements.append(
-                    "可见出口：" + "、".join(item.name for item in scene.available_exits) + "。"
+                    "这里还有通向"
+                    + "、".join(item.name for item in scene.available_exits)
+                    + "的出入口。"
                 )
             refs = tuple(dict.fromkeys((*refs, *(item.event_ref for item in arrivals))))
         if any(item.required_in_narration for item in getattr(context, "narration_evidence", ())):
@@ -2296,10 +2325,11 @@ class ActionPlanTurnApplication:
             )
         else:
             status_text = "这次行动已经按当前可确认的结果完成。"
+        separator = "\n\n" if arrivals else ""
         if outcomes and outcomes[-1] != "success":
-            fallback_text = status_text + "".join(statements)
+            fallback_text = separator.join((status_text, *statements))
         else:
-            fallback_text = "".join(statements) or status_text
+            fallback_text = separator.join(statements) or status_text
         return ActionPlanNarrationOutput(
             # 失败或取消时即使存在失败分支效果，也必须先明确行动结果，不能让
             # 玩家把后面的状态变化误读成目标已经成功达成。

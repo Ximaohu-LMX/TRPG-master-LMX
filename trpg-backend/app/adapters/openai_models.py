@@ -327,11 +327,13 @@ kind=clarification。若 completed_steps 已有成功的旅行步骤，但后续
 needs_clarification，才用自然的角色内措辞提出一次最小澄清。claimed_evidence_refs
 只能复制 allowed_evidence_refs 中正文确实使用的值。不得输出 raw plan、裁决效果、
 内部状态、工具结果、模型推理或协议字段。建议动作最多三条且只能来自最终 PlayerView。
-叙事必须明确写出 narration_evidence 中 required_in_narration=true 的每项玩家可见结果；
-应把对应 ref 放入 claimed_evidence_refs。information_revealed 的 description 是本次新增
-公开事实，必须完整保留正文（可调整排版、排序及连接句），不能只写标题或留给信息面板。
+叙事必须交代 narration_evidence 中 required_in_narration=true 的每项玩家可见结果。
+information_revealed 的 description 是本次新增公开事实的底稿；按原意自然融入现场，
+允许重排、合并句段和改述，不必逐字照抄。保留人物关系、数量、时间、否定和行动条件，
+不得改变含义或把未知写成确定；不能只写标题或留给信息面板。信息完整优先于压缩篇幅。
+将正文实际表达的每项事实对应 ref 放入 claimed_evidence_refs；仅申报引用不等于交代事实。
 其它 known_information 是背景，不自动表示新发现。实体发现应明确写出公开名称或别名。
-服务端依据正文记录必写证据引用；即使后续失败或需要澄清，也要交代此前确认的结果。
+即使后续失败或需要澄清，也要交代此前确认的结果。
 text 只能包含自然的角色内叙事，不得把 claimed_evidence_refs、claimed_inventory_ids、
 claimed_state_changes、suggested_actions 或其他 JSON/schema 字段和值重复写入正文。
 如果输入中提供 narration_retry_hint，说明上一版叙事未通过玩家可见输出安全校验；本次必须
@@ -409,9 +411,13 @@ time_label 是模组允许玩家看到的**全部**时间信息。只能使用�
 缺少 world_time_after 时按相邻步骤的措辞推断。
 
 【现场与篇幅】
-- 本次 committed_results 确认抵达当前场景时，明确写出地点，再用最终 scene 的公开描述、
-  可见人物与物件、公开状态及出口建立现场，让玩家明白周围有什么、能与什么互动。
+- 本次 committed_results 确认抵达当前场景时，把最终 scene 的公开描述作为底稿，
+  结合行动角色自然描写抵达后的现场，清楚交代地点并引用对应的 location 结果。
+  地点名称可自然称呼，无需为了全称另写一句抵达播报。将可见人物、物件、公开状态、
+  出入口与本次新增事实融入连贯段落，让玩家明白周围有什么、能与什么互动；
+  不使用“周围可见 / 可见出口”式清单，不把同一信息在环境与线索中重复播报。
   首次展示可以充分描写空间和氛围；重返已介绍地点时结合历史缩短，重点交代变化。
+  已知房间或看见入口不代表已获准进入，按公开资料保留访问限制。
 - 场景资料缺少空间细节时，不补造门窗、路线或物件。人物当前状态优先于静态描述。
 - previous_published_narration 保持行动连续性；不要照抄出发地的画面。新地点可以有
   相同时段、光线或天气。同地点连续行动先讲新结果，不重复完整环境介绍。
@@ -879,7 +885,7 @@ class PromptActionPlanNarrationModel:
             schema_name="trpg_action_plan_narration",
             schema=ActionPlanNarrationOutput.model_json_schema(mode="serialization"),
             instructions=_ACTION_PLAN_NARRATION_INSTRUCTIONS,
-            input_payload=context.to_json_dict(),
+            input_payload=context.to_prompt_dict(),
         )
 
 

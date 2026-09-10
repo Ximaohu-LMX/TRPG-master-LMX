@@ -2,7 +2,12 @@
 
 import pytest
 
-from collaboration_framework.contracts import NarrationEvidence
+from collaboration_framework.contracts import (
+    CheckpointOption,
+    CommittedResult,
+    KnownInformationView,
+    NarrationEvidence,
+)
 from collaboration_framework.engine import AdjudicationEngineService
 from collaboration_framework.engine.models import DomainEvent, EngineRuntimeSnapshot
 from collaboration_framework.host.application import (
@@ -141,7 +146,7 @@ def test_public_information_is_a_delta_for_the_broadcast_audience(case, expected
 
 
 @pytest.mark.asyncio
-async def test_information_needs_full_body_and_only_source_spans_get_style_exemption():
+async def test_literal_information_recovers_refs_and_only_source_spans_get_style_exemption():
     service, _, _, _, _ = orchestrator()
     original = player_input()
     await service.start_or_resume(original, plan=plan(2))
@@ -259,6 +264,20 @@ async def test_confirmed_arrival_requires_place_and_allows_new_scene_atmosphere(
     )
     narrator = ActionPlanNarrator(None)
     assert narrator.validate(context, {"text": text}).text == text
+    natural_arrival = "你沿楼梯下楼，回到楼下的大厅。"
+    assert (
+        narrator.validate(
+            context, {"text": natural_arrival, "claimed_evidence_refs": [ref]}
+        ).text
+        == natural_arrival
+    )
+    unrelated_ref = context.allowed_evidence_refs[-1]
+    assert unrelated_ref != ref
+    with pytest.raises(ActionPlanNarrationValidationError) as unrelated:
+        narrator.validate(
+            context, {"text": natural_arrival, "claimed_evidence_refs": [unrelated_ref]}
+        )
+    assert unrelated.value.reason == "required_arrival_missing"
     with pytest.raises(ActionPlanNarrationValidationError) as exc:
         narrator.validate(context, {"text": "你停下脚步。"})
     assert exc.value.reason == "required_arrival_missing"
@@ -266,3 +285,147 @@ async def test_confirmed_arrival_requires_place_and_allows_new_scene_atmosphere(
         narration_atmosphere_rejection_reason(prior, prior, scene_changed=True)
         == "atmosphere_repeat"
     )
+
+
+@pytest.mark.parametrize(
+    "case,reason",
+    [
+        ("rewrite", None),
+        ("missing_ref", "required_evidence_missing"),
+        ("foreign_ref", "evidence_scope"),
+        ("wrong_subject", "subject_ownership"),
+        ("embedded_dialogue", "npc_dialogue_embedded_in_text"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_arrival_accepts_rewritten_information_with_scoped_source_claim(
+    case, reason
+):
+    service, _, _, _, _ = orchestrator()
+    original = player_input()
+    await service.start_or_resume(original, plan=plan(2))
+    context = await service.build_narration_context(original)
+    ref = context.allowed_evidence_refs[0]
+    fact = NarrationEvidence(
+        ref=ref,
+        kind="information_revealed",
+        subject_id="departure",
+        subject_name="离开的条件",
+        description="你听见答复：“今晚不能离开；必须等到明天。”",
+        required_in_narration=True,
+    )
+    scene = context.player_view.scene
+    step = context.completed_steps[0].model_copy(
+        update={
+            "narration_evidence": (fact,),
+            "committed_results": (
+                CommittedResult(kind="location", target_id=scene.id, event_ref=ref),
+            ),
+        }
+    )
+    context = context.model_copy(
+        update={
+            "narration_evidence": (fact,),
+            "completed_steps": (step, *context.completed_steps[1:]),
+            "addressing_mode": "named_actor",
+        }
+    )
+    text = f"调查员走进{scene.name}。答复很明确：明天才可以离开，今晚必须留在这里。"
+    refs = [ref]
+    replies = []
+    if case == "missing_ref":
+        refs = []
+    elif case == "foreign_ref":
+        refs = ["unpublished-event"]
+    elif case == "wrong_subject":
+        text += "你继续前进。"
+    elif case == "embedded_dialogue":
+        text += "有人喊：“走吧！”"
+        replies = [{"speaker_id": "npc", "text": "..."}]
+    candidate = {"text": text, "claimed_evidence_refs": refs, "npc_replies": replies}
+    narrator = ActionPlanNarrator(None)
+    if reason is not None:
+        with pytest.raises(ActionPlanNarrationValidationError) as exc:
+            narrator.validate(context, candidate)
+        assert exc.value.reason == reason
+    else:
+        output = narrator.validate(context, candidate)
+        assert output.text == text
+        assert fact.description not in output.text
+        assert output.claimed_evidence_refs == (ref,)
+
+
+@pytest.mark.asyncio
+async def test_narration_prompt_preserves_scene_and_results_without_duplicate_sources():
+    service, _, _, _, _ = orchestrator()
+    original = player_input()
+    await service.start_or_resume(original, plan=plan(2))
+    context = await service.build_narration_context(original)
+    fact = NarrationEvidence(
+        ref=context.allowed_evidence_refs[0],
+        kind="information_revealed",
+        subject_id="departure",
+        subject_name="离开的条件",
+        description="今晚不能离开，必须等到明天。",
+        required_in_narration=True,
+    )
+    known = KnownInformationView(
+        id=fact.subject_id,
+        title=fact.subject_name,
+        summary="新消息",
+        content=fact.description,
+        scope="party",
+    )
+    earlier = known.model_copy(update={"id": "old-fact", "content": "调查员受邀前来。"})
+    step = context.completed_steps[0].model_copy(update={"narration_evidence": (fact,)})
+    view = context.player_view.model_copy(
+        update={
+            "known_information": (earlier, known),
+            "checkpoint_options": (
+                CheckpointOption(
+                    id="ask", target_id="npc", action_hint="询问离开的条件"
+                ),
+            ),
+        }
+    )
+    context = context.model_copy(
+        update={
+            "player_view": view,
+            "completed_steps": (step, *context.completed_steps[1:]),
+            "narration_evidence": (fact,),
+            "previous_published_narration": "调查员刚离开街道。",
+            "forbidden_disclosure_terms": ("未公开秘密",),
+        }
+    )
+    original_json = context.to_json_dict()
+    payload = context.to_prompt_dict()
+    assert context.to_json_dict() == original_json
+    assert payload["player_view"]["scene"] == original_json["player_view"]["scene"]
+    assert (
+        payload["player_view"]["self_actor"]
+        == original_json["player_view"]["self_actor"]
+    )
+    assert (
+        payload["player_view"]["inventory"] == original_json["player_view"]["inventory"]
+    )
+    assert payload["player_view"]["known_information"] == [earlier.to_json_dict()]
+    assert "checkpoint_options" not in payload["player_view"]
+    assert "background" not in payload["player_view"]
+    assert "forbidden_disclosure_terms" not in payload
+    assert payload["narration_evidence"] == [fact.to_json_dict()]
+    for compact, full in zip(
+        payload["completed_steps"], original_json["completed_steps"], strict=True
+    ):
+        assert compact == {
+            key: value for key, value in full.items() if key != "narration_evidence"
+        }
+    for key in (
+        "background",
+        "memories",
+        "conversation_summary",
+        "previous_published_narration",
+        "allowed_evidence_refs",
+        "opening_world_time",
+        "termination_status",
+    ):
+        assert payload[key] == original_json[key]

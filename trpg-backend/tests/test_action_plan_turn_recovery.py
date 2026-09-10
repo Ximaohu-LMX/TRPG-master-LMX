@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from collaboration_framework.contracts import (
     ActionPlanPolicy,
+    AvailableExitView,
     CommittedResult,
     InventoryItemView,
     KeeperCapabilityView,
@@ -27,6 +28,7 @@ from collaboration_framework.host.application import (
 from collaboration_framework.host.schemas import (
     ActionPlanNarrationContext,
     ActionPlanNarrationOutput,
+    CompletedPlanStepSummary,
 )
 
 from app.adapters.structured_http import StructuredOutputError
@@ -290,7 +292,7 @@ def test_partial_travel_success_fallback_keeps_the_arrival() -> None:
     output = ActionPlanTurnApplication._deterministic_narration_fallback(cast(Any, context))
 
     assert output.kind == "clarification"
-    assert "已经抵达镇上的旅店" in output.text
+    assert "来到镇上的旅店" in output.text
     assert "后续行动" in output.text
     assert "没有" not in output.text
     assert "仍停留在原处" not in output.text
@@ -996,3 +998,96 @@ async def test_narration_treats_inventory_as_public_without_releasing_hidden_con
     assert generate.await_count == (1 if accepted else 2)
     assert output.text == (text if accepted else safe_retry)
     assert output.claimed_inventory_ids == (claimed_inventory_ids if accepted else ())
+
+
+@pytest.mark.parametrize("keep_literal_source", [False, True])
+def test_sentence_degradation_rechecks_information_after_removing_model_claims(
+    keep_literal_source: bool,
+) -> None:
+    fact = NarrationEvidence(
+        ref="map-revealed",
+        kind="information_revealed",
+        subject_id="map",
+        subject_name="楼层地图",
+        description="楼上有八间客房，进入需要许可。",
+        required_in_narration=True,
+    )
+    player_input = PlayerInput(
+        room_id="room",
+        player_id="player",
+        actor_id="actor",
+        client_action_id="arrival",
+        utterance="进入大厅",
+    )
+    view = PlayerView(
+        room_id="room",
+        player_id="player",
+        actor_id="actor",
+        background="调查旅店。",
+        scene_id="hall",
+        phase="playing",
+        revision="2",
+        self_actor=SelfActorView(id="actor", name="调查员"),
+        scene=SceneView(
+            id="hall",
+            name="接待大厅",
+            description="大厅有前台和地图。",
+            visible_entities=(
+                VisibleEntity(id="clerk", kind="npc", name="接待员", description=""),
+                VisibleEntity(id="map", kind="object", name="楼层地图", description=""),
+            ),
+            available_exits=(AvailableExitView(id="upstairs", name="二楼客房"),),
+        ),
+    )
+    step = CompletedPlanStepSummary(
+        step_index=0,
+        semantic_goal="进入大厅",
+        outcome="success",
+        view_revision="2",
+        event_refs=("arrived", fact.ref),
+        narration_evidence=(fact,),
+        committed_results=(
+            CommittedResult(kind="location", target_id="hall", event_ref="arrived"),
+        ),
+    )
+    context = ActionPlanNarrationContext(
+        background=view.background,
+        player_input=player_input,
+        plan_goal="进入大厅",
+        termination_status="resolved",
+        player_view=view,
+        completed_steps=(step,),
+        narration_evidence=(fact,),
+        allowed_evidence_refs=step.event_refs,
+    )
+    prefix = "你走进接待大厅。" + (fact.description if keep_literal_source else "")
+    removed = "楼上的八间房都需要获准才能进入，有人喊：“快走！”"
+    candidate = ActionPlanNarrationOutput(text=prefix + removed, claimed_evidence_refs=(fact.ref,))
+    error = ActionPlanNarrationValidationError(
+        "npc_dialogue_embedded_in_text",
+        output=candidate,
+        offending_spans=((len(prefix), len(candidate.text)),),
+    )
+    app = object.__new__(ActionPlanTurnApplication)
+    app._narrator = ActionPlanNarrator(cast(Any, None))
+    output = app._sentence_degraded_narration(context, error)
+    if keep_literal_source:
+        assert output is not None
+        assert output.text == prefix
+        assert output.claimed_evidence_refs == (fact.ref,)
+    else:
+        assert output is None
+        fallback = app._deterministic_narration_fallback(context)
+        for required in (
+            view.scene.name,
+            "前台",
+            "接待员",
+            "楼层地图",
+            "二楼客房",
+            fact.description,
+        ):
+            assert required in fallback.text
+        assert set(fallback.claimed_evidence_refs) == {"arrived", fact.ref}
+        assert "周围可见：" not in fallback.text
+        assert "可见出口：" not in fallback.text
+        assert "\n\n" in fallback.text
