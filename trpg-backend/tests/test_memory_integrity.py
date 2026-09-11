@@ -173,6 +173,9 @@ async def test_structured_check_is_available_to_memory_and_summary(db_session, m
 async def test_published_narration_records_current_companions_for_later_recall(
     db_session, memory_store, monkeypatch
 ):
+    import asyncio
+    from types import SimpleNamespace
+
     from collaboration_framework.contracts import PlayerView
     from collaboration_framework.host.schemas import NarrationOutput
 
@@ -206,6 +209,25 @@ async def test_published_narration_records_current_companions_for_later_recall(
     )
     for name in ("_send_to_player", "_send_view_updated", "_emit_turn_narration"):
         monkeypatch.setattr(ws, name, AsyncMock())
+    from app.main import app
+
+    enqueued = asyncio.Event()
+    reply_saved = False
+
+    async def persist_followup():
+        nonlocal reply_saved
+        db_session.add(dialogue(room, player, text="我还跟着你。", offset=1))
+        await db_session.commit()
+        reply_saved = True
+
+    async def enqueue(**kwargs):
+        assert kwargs["room_id"] == room.id
+        assert reply_saved, "NPC replies must be committed before summary enqueue"
+        enqueued.set()
+
+    monkeypatch.setattr(
+        app.state, "conversation_summary_service", SimpleNamespace(enqueue_room_if_needed=enqueue)
+    )
     await ws._send_completed_turn_message(
         db_session,
         None,
@@ -215,7 +237,9 @@ async def test_published_narration_records_current_companions_for_later_recall(
         client_action_id="published-companion",
         player_view=view,
         narration=NarrationOutput(kind="narration", text="你和同行者一起走出车站。"),
+        after_narration=persist_followup,
     )
+    await asyncio.wait_for(enqueued.wait(), 5)
     context = await read(memory_store, room, player, actor)
     assert any("一起走出车站" in item.content for item in context.entries)
     assert "resident" not in context.entries[0].participants

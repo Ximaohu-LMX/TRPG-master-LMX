@@ -2185,6 +2185,9 @@ async def _send_completed_turn_message(
             client_action_id=client_action_id,
             narration=persisted_narration,
         )
+    # 跟进 NPC 回复先持久化，摘要才能覆盖本回合完整对白。
+    if after_narration is not None:
+        await after_narration()
     # 摘要是异步可重建读模型，不能阻塞本回合的权威叙事发送。
     # 队列出队时 websocket 可能是 None，回退到应用单例上的同一服务。
     summary_service = None
@@ -2200,8 +2203,6 @@ async def _send_completed_turn_message(
             summary_service.enqueue_room_if_needed(room_id=room_id),
             name=f"enqueue-conversation-summary-{room_id}",
         )
-    if after_narration is not None:
-        await after_narration()
     return recorded
 
 

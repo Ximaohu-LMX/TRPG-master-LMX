@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -120,6 +121,7 @@ class ConversationSummaryRecord(Base):
         Uuid(as_uuid=False), ForeignKey("players.id"), nullable=False
     )
     summary_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    projection_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     # 摘要游标使用 Event 的真实发生时间和稳定 ID，避免不同事件流的 sequence 混比。
     through_event_created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -146,3 +148,20 @@ class ConversationSummaryRecord(Base):
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
     )
+
+
+class ConversationSummaryReceipt(Base):
+    """每个玩家摘要消费过的事件与正文位置，晚提交事件及长文本可继续处理。"""
+
+    __tablename__ = "conversation_summary_receipts"
+
+    summary_id: Mapped[str] = mapped_column(
+        Uuid(as_uuid=False),
+        ForeignKey("conversation_summaries.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    event_id: Mapped[str] = mapped_column(
+        Uuid(as_uuid=False), ForeignKey("events.id", ondelete="CASCADE"), primary_key=True
+    )
+    consumed_chars: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

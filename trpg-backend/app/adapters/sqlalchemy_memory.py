@@ -835,6 +835,7 @@ class SqlAlchemyMemoryStore:
             summary_record = await session.scalar(
                 select(ConversationSummaryRecord).where(
                     ConversationSummaryRecord.room_id == stored_room_id,
+                    ConversationSummaryRecord.projection_version == 1,
                     ConversationSummaryRecord.player_id.in_(player_scope_ids),
                     _revision_condition(
                         ConversationSummaryRecord.source_revision,
@@ -871,6 +872,19 @@ class SqlAlchemyMemoryStore:
                     logger.warning(
                         "memory_summary_rejected", room_id=room_id, error_type=type(exc).__name__
                     )
+            logger.info(
+                "memory_context_selected",
+                room_id=room_id,
+                player_id=player_id,
+                actor_id=actor_id,
+                action_id=before_action_id,
+                mode=mode,
+                revision=revision,
+                entry_count=len(entries),
+                text_chars=total,
+                source_event_ids=[entry.source_event_id for entry in entries],
+                has_summary=summary is not None,
+            )
             return MemoryContext(
                 room_id=room_id,
                 player_id=player_id,
