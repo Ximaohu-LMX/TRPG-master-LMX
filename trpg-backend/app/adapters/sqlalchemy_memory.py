@@ -8,12 +8,16 @@ from datetime import UTC, datetime
 from typing import Any
 from typing import cast as typing_cast
 
+import structlog
 from collaboration_framework.host.schemas import ConversationSummary, MemoryContext, MemoryEntry
+from collaboration_framework.host.schemas.memory import MemoryVisibility
+from pydantic import ValidationError
 from sqlalchemy import and_, case, cast, delete, exists, func, or_, select, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.engine import GameEvent
@@ -23,6 +27,8 @@ from app.models.memory import (
     MemoryEntryRecord,
     MemoryProjectionCursor,
 )
+
+logger = structlog.get_logger()
 
 
 @dataclass(frozen=True)
@@ -77,7 +83,7 @@ def _text(payload: dict) -> str:
     for key in ("text", "utterance", "summary", "description", "content"):
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()[:2000]
+            return value.strip()
     return ""
 
 
@@ -108,7 +114,7 @@ def _memory_from_event(
         kind=kind,
         content=text,
         epistemic_status=epistemic_status,
-        visibility="player_scoped" if event.visibility == "player_scoped" else "public",
+        visibility=typing_cast(MemoryVisibility, event.visibility),
         participants=tuple(
             canonical
             for x in (event.player_id, event.actor_id)
@@ -163,7 +169,7 @@ def _listener_memories(
                 f'玩家角色 {speaker_id} 对实体 {listener_id} 说："{utterance}"；该实体在场并听到。'
             ),
             epistemic_status="experienced",
-            visibility="public" if event.visibility == "public" else "player_scoped",
+            visibility=typing_cast(MemoryVisibility, event.visibility),
             participants=(speaker_id, listener_id),
             listener_ids=(listener_id,),
             audience_player_ids=audience_player_ids,
@@ -194,7 +200,7 @@ def _memory_from_game_event(event: GameEvent) -> MemoryEntry | None:
         room_id=event.room_id,
         subject_id=event.actor_id,
         kind=kind,
-        content=text[:2000],
+        content=text,
         epistemic_status="confirmed",
         visibility="public" if event.visibility == "public" else "entity_scoped",
         participants=(event.actor_id,),
@@ -337,12 +343,20 @@ class SqlAlchemyMemoryStore:
                 audience_player_ids = event_audiences.get(event.id, ())
             else:
                 audience_player_ids = ()
-            if entry := _memory_from_event(event, audience_player_ids=audience_player_ids):
-                candidates.append((entry, event.created_at))
-            candidates.extend(
-                (entry, event.created_at)
-                for entry in _listener_memories(event, audience_player_ids=audience_player_ids)
-            )
+            try:
+                if entry := _memory_from_event(event, audience_player_ids=audience_player_ids):
+                    candidates.append((entry, event.created_at))
+                candidates.extend(
+                    (entry, event.created_at)
+                    for entry in _listener_memories(event, audience_player_ids=audience_player_ids)
+                )
+            except (ValidationError, TypeError, ValueError) as exc:
+                logger.warning(
+                    "memory_event_projection_rejected",
+                    room_id=room_id,
+                    source_event_id=event.id,
+                    error_type=type(exc).__name__,
+                )
         candidates.extend(
             (entry, event.created_at)
             for event in game_events
@@ -526,7 +540,15 @@ class SqlAlchemyMemoryStore:
         """共享的有限读取实现；mode 只决定 keeper 是否跳过玩家受众裁剪。"""
 
         stored_room_id = room_id
-        await self.project_room_events(stored_room_id)
+        try:
+            await self.project_room_events(stored_room_id)
+        except (SQLAlchemyError, ValidationError, TypeError, ValueError) as exc:
+            # A failed refresh must not discard previously committed memories.
+            logger.warning(
+                "memory_projection_refresh_failed",
+                room_id=room_id,
+                error_type=type(exc).__name__,
+            )
         async with self._session_factory() as session:
 
             def participant_has(item: str):
@@ -572,7 +594,7 @@ class SqlAlchemyMemoryStore:
             if mode == "npc":
                 conditions.append(
                     or_(
-                        MemoryEntryRecord.visibility == "public",
+                        MemoryEntryRecord.visibility.in_(("public", "scene_scoped")),
                         and_(
                             MemoryEntryRecord.visibility == "player_scoped",
                             or_(*(participant_has(item) for item in player_scope_ids)),
@@ -584,7 +606,10 @@ class SqlAlchemyMemoryStore:
                 )
                 conditions.append(
                     or_(
-                        audience_empty(),
+                        and_(
+                            MemoryEntryRecord.visibility != "scene_scoped",
+                            audience_empty(),
+                        ),
                         and_(
                             ~audience_empty(),
                             or_(*(audience_has(item) for item in player_scope_ids)),
@@ -632,25 +657,34 @@ class SqlAlchemyMemoryStore:
             entries: list[MemoryEntry] = []
             total = 0
             for record in records:
-                entry = MemoryEntry.model_validate(
-                    {
-                        "memory_id": record.id,
-                        "room_id": room_id,
-                        "subject_id": record.subject_id,
-                        "object_id": record.object_id,
-                        "kind": record.kind,
-                        "content": record.content,
-                        "epistemic_status": record.epistemic_status,
-                        "visibility": record.visibility,
-                        "participants": tuple(record.participants or ()),
-                        "listener_ids": tuple(record.listener_ids or ()),
-                        "audience_player_ids": tuple(record.audience_player_ids or ()),
-                        "location_id": record.location_id,
-                        "source_event_id": record.source_event_id,
-                        "source_sequence": record.source_sequence,
-                        "source_revision": record.source_revision,
-                    }
-                )
+                try:
+                    entry = MemoryEntry.model_validate(
+                        {
+                            "memory_id": record.id,
+                            "room_id": room_id,
+                            "subject_id": record.subject_id,
+                            "object_id": record.object_id,
+                            "kind": record.kind,
+                            "content": record.content,
+                            "epistemic_status": record.epistemic_status,
+                            "visibility": record.visibility,
+                            "participants": tuple(record.participants or ()),
+                            "listener_ids": tuple(record.listener_ids or ()),
+                            "audience_player_ids": tuple(record.audience_player_ids or ()),
+                            "location_id": record.location_id,
+                            "source_event_id": record.source_event_id,
+                            "source_sequence": record.source_sequence,
+                            "source_revision": record.source_revision,
+                        }
+                    )
+                except ValidationError as exc:
+                    logger.warning(
+                        "memory_record_rejected",
+                        room_id=room_id,
+                        memory_id=record.id,
+                        error_type=type(exc).__name__,
+                    )
+                    continue
                 if len(entries) >= limit or total + len(entry.content) > max_chars:
                     continue
                 entries.append(entry)
@@ -666,7 +700,12 @@ class SqlAlchemyMemoryStore:
                 summary_payload = dict(summary_record.summary_json)
                 summary_payload["room_id"] = room_id
                 summary_payload["player_id"] = player_id
-                summary = ConversationSummary.model_validate(summary_payload)
+                try:
+                    summary = ConversationSummary.model_validate(summary_payload)
+                except ValidationError as exc:
+                    logger.warning(
+                        "memory_summary_rejected", room_id=room_id, error_type=type(exc).__name__
+                    )
             return MemoryContext(
                 room_id=room_id,
                 player_id=player_id,
