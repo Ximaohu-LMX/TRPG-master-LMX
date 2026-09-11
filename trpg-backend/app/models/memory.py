@@ -52,7 +52,7 @@ class MemoryEntryRecord(Base):
     participants: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     # 与 participants 分开保存，避免把“共同参与”误当成“亲自听到”。
     listener_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    # 冻结受众是玩家权限，不是世界内认知；空数组表示这条记忆对所有 viewer 都可见。
+    # 冻结受众是玩家权限；scene_scoped 的空受众不能视为公开。
     audience_player_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     location_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     source_event_id: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -80,12 +80,25 @@ class MemoryProjectionCursor(Base):
     )
     event_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     game_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    projection_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
     )
+
+
+class MemoryProjectionReceipt(Base):
+    """逐条记录已处理来源，包括无正文事件，不依赖事件的提交顺序。"""
+
+    __tablename__ = "memory_projection_receipts"
+
+    room_id: Mapped[str] = mapped_column(
+        Uuid(as_uuid=False), ForeignKey("game_sessions.room_id"), primary_key=True
+    )
+    source_kind: Mapped[str] = mapped_column(String(10), primary_key=True)
+    source_id: Mapped[str] = mapped_column(String(100), primary_key=True)
 
 
 class ConversationSummaryRecord(Base):

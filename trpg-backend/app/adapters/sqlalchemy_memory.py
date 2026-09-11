@@ -12,7 +12,19 @@ import structlog
 from collaboration_framework.host.schemas import ConversationSummary, MemoryContext, MemoryEntry
 from collaboration_framework.host.schemas.memory import MemoryVisibility
 from pydantic import ValidationError
-from sqlalchemy import and_, case, cast, delete, exists, func, or_, select, update
+from sqlalchemy import (
+    BigInteger,
+    String,
+    and_,
+    case,
+    cast,
+    delete,
+    exists,
+    func,
+    or_,
+    select,
+    update,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -21,15 +33,17 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.event_text import event_text, game_event_text, payload_ids
-from app.models.engine import GameEvent
+from app.models.engine import GameEvent, GameSession
 from app.models.event import Event, EventAudience
 from app.models.memory import (
     ConversationSummaryRecord,
     MemoryEntryRecord,
     MemoryProjectionCursor,
+    MemoryProjectionReceipt,
 )
 
 logger = structlog.get_logger()
+_PROJECTION_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -77,6 +91,32 @@ def _scope_ids(value: str) -> tuple[str, ...]:
     """查询同时兼容历史带连字符 ID 和新 canonical ID。"""
     canonical = _canonical_id(value) or value
     return tuple(dict.fromkeys((value, canonical)))
+
+
+def _revision_condition(column, revision: str, *, allow_unknown: bool, dialect: str):
+    """Only cast validated numeric revisions; opaque revisions must match exactly."""
+    numeric = (
+        and_(column != "", column.op("NOT GLOB")("*[^0-9]*"), func.length(column) <= 18)
+        if dialect == "sqlite"
+        else column.op("~")("^[0-9]{1,18}$")
+    )
+    condition = column == revision
+    if revision.isascii() and revision.isdigit():
+        condition = or_(
+            condition, case((numeric, cast(column, BigInteger)), else_=None) <= int(revision)
+        )
+    return or_(condition, column.is_(None)) if allow_unknown else condition
+
+
+def _excerpt(text: str, budget: int) -> str:
+    if len(text) <= budget:
+        return text
+    marker = "…[中段省略]…"
+    if budget <= len(marker):
+        return text[:budget]
+    available = budget - len(marker)
+    head = (available + 1) // 2
+    return text[:head] + marker + (text[-(available - head) :] if available > head else "")
 
 
 def _memory_from_event(
@@ -240,7 +280,7 @@ class SqlAlchemyMemoryStore:
         self._session_factory = session_factory
 
     async def project_room_events(self, room_id: str) -> MemoryProjectionResult:
-        """只投影房间游标后的新事件，并以单事务提交记忆和高水位。"""
+        """投影尚无处理记录的事件，并在同一事务保存记忆和处理记录。"""
         # 房间主键使用数据库中的原始 UUID 文本；canonicalize 只适用于实体参与者。
         async with self._session_factory() as session:
             result = await self._project_room_events(session, room_id)
@@ -250,13 +290,7 @@ class SqlAlchemyMemoryStore:
     async def rebuild_room_events(self, room_id: str) -> MemoryProjectionResult:
         """在单事务中替换指定房间的记忆投影，保留摘要和权威事件。"""
         async with self._session_factory() as session:
-            await session.execute(
-                delete(MemoryEntryRecord).where(MemoryEntryRecord.room_id == room_id)
-            )
-            await session.execute(
-                delete(MemoryProjectionCursor).where(MemoryProjectionCursor.room_id == room_id)
-            )
-            result = await self._project_room_events(session, room_id)
+            result = await self._project_room_events(session, room_id, force_rebuild=True)
             await session.commit()
             return result
 
@@ -264,6 +298,8 @@ class SqlAlchemyMemoryStore:
         self,
         session: AsyncSession,
         room_id: str,
+        *,
+        force_rebuild: bool = False,
     ) -> MemoryProjectionResult:
         """在调用方事务内执行投影；数据库唯一键负责跨进程并发幂等。"""
         now = datetime.now(UTC)
@@ -277,15 +313,48 @@ class SqlAlchemyMemoryStore:
                         "event_created_at": None,
                         "event_id": None,
                         "game_sequence": 0,
+                        "projection_version": _PROJECTION_VERSION,
                         "updated_at": now,
                     }
                 ],
                 index_elements=("room_id",),
             )
         )
-        cursor = await session.get(MemoryProjectionCursor, room_id)
+        cursor = await session.scalar(
+            select(MemoryProjectionCursor)
+            .where(MemoryProjectionCursor.room_id == room_id)
+            .with_for_update()
+        )
         if cursor is None:
             raise RuntimeError(f"memory projection cursor missing for room {room_id}")
+
+        if force_rebuild or cursor.projection_version != _PROJECTION_VERSION:
+            await session.execute(
+                delete(MemoryEntryRecord).where(MemoryEntryRecord.room_id == room_id)
+            )
+            await session.execute(
+                delete(MemoryProjectionReceipt).where(MemoryProjectionReceipt.room_id == room_id)
+            )
+            cursor.event_created_at = None
+            cursor.event_id = None
+            cursor.game_sequence = 0
+            cursor.projection_version = _PROJECTION_VERSION
+            await session.flush()
+            logger.info("memory_projection_rebuilt", room_id=room_id, version=_PROJECTION_VERSION)
+
+        def unprocessed(kind: str, source_id):
+            return ~exists(
+                select(1).where(
+                    MemoryProjectionReceipt.room_id == room_id,
+                    MemoryProjectionReceipt.source_kind == kind,
+                    MemoryProjectionReceipt.source_id
+                    == (
+                        func.replace(cast(source_id, String), "-", "")
+                        if kind == "event"
+                        else source_id
+                    ),
+                )
+            )
 
         event_conditions = [
             Event.room_id == room_id,
@@ -298,18 +367,9 @@ class SqlAlchemyMemoryStore:
                     "dialogue.npc",
                 )
             ),
-            or_(Event.visibility == "public", Event.player_id.is_not(None)),
+            or_(Event.visibility.in_(("public", "scene_scoped")), Event.player_id.is_not(None)),
+            unprocessed("event", Event.id),
         ]
-        if cursor.event_created_at is not None and cursor.event_id is not None:
-            event_conditions.append(
-                or_(
-                    Event.created_at > cursor.event_created_at,
-                    and_(
-                        Event.created_at == cursor.event_created_at,
-                        Event.id > cursor.event_id,
-                    ),
-                )
-            )
         events = list(
             (
                 await session.scalars(
@@ -324,7 +384,7 @@ class SqlAlchemyMemoryStore:
                     .where(
                         GameEvent.room_id == room_id,
                         GameEvent.visibility == "public",
-                        GameEvent.sequence > cursor.game_sequence,
+                        unprocessed("game", GameEvent.event_id),
                     )
                     .order_by(GameEvent.sequence)
                 )
@@ -368,11 +428,17 @@ class SqlAlchemyMemoryStore:
                     source_event_id=event.id,
                     error_type=type(exc).__name__,
                 )
-        candidates.extend(
-            (entry, event.created_at)
-            for event in game_events
-            if (entry := _memory_from_game_event(event))
-        )
+        for event in game_events:
+            try:
+                if entry := _memory_from_game_event(event):
+                    candidates.append((entry, event.created_at))
+            except (ValidationError, TypeError, ValueError) as exc:
+                logger.warning(
+                    "memory_event_projection_rejected",
+                    room_id=room_id,
+                    source_event_id=event.event_id,
+                    error_type=type(exc).__name__,
+                )
         values = [
             {
                 "id": str(uuid.uuid4()),
@@ -396,19 +462,41 @@ class SqlAlchemyMemoryStore:
             for entry, source_created_at in candidates
         ]
         inserted = 0
-        if values:
+        for offset in range(0, len(values), 100):
             insert_result = typing_cast(
                 CursorResult[Any],
                 await session.execute(
                     _insert_ignore(
                         session,
                         MemoryEntryRecord,
-                        values,
+                        values[offset : offset + 100],
                         index_elements=("room_id", "subject_id", "source_event_id", "kind"),
                     )
                 ),
             )
-            inserted = max(insert_result.rowcount or 0, 0)
+            inserted += max(insert_result.rowcount or 0, 0)
+
+        receipts = [
+            {
+                "room_id": room_id,
+                "source_kind": kind,
+                "source_id": source_id.replace("-", "") if kind == "event" else source_id,
+            }
+            for kind, source_id in (
+                *(("event", event.id) for event in events),
+                *(("game", event.event_id) for event in game_events),
+            )
+        ]
+        # Bound statement parameters for long-room rebuilds on both SQLite and PostgreSQL.
+        for offset in range(0, len(receipts), 300):
+            await session.execute(
+                _insert_ignore(
+                    session,
+                    MemoryProjectionReceipt,
+                    receipts[offset : offset + 300],
+                    index_elements=("room_id", "source_kind", "source_id"),
+                )
+            )
 
         # 游标更新必须由数据库比较当前值，避免较旧的并发事务覆盖更高水位。
         if events:
@@ -461,6 +549,7 @@ class SqlAlchemyMemoryStore:
         player_id: str,
         actor_id: str,
         revision: str,
+        before_action_id: str | None = None,
         entity_ids: tuple[str, ...] = (),
         location_id: str | None = None,
         limit: int = 12,
@@ -473,6 +562,7 @@ class SqlAlchemyMemoryStore:
             player_id=player_id,
             actor_id=actor_id,
             revision=revision,
+            before_action_id=before_action_id,
             entity_ids=entity_ids,
             location_id=location_id,
             limit=limit,
@@ -487,6 +577,7 @@ class SqlAlchemyMemoryStore:
         player_id: str,
         actor_id: str,
         revision: str,
+        before_action_id: str | None = None,
         interlocutor_id: str | None = None,
         entity_ids: tuple[str, ...] = (),
         location_id: str | None = None,
@@ -502,6 +593,7 @@ class SqlAlchemyMemoryStore:
             player_id=player_id,
             actor_id=actor_id,
             revision=revision,
+            before_action_id=before_action_id,
             entity_ids=entity_ids,
             location_id=location_id,
             limit=limit,
@@ -516,6 +608,7 @@ class SqlAlchemyMemoryStore:
         player_id: str,
         actor_id: str,
         revision: str,
+        before_action_id: str | None = None,
         entity_ids: tuple[str, ...] = (),
         location_id: str | None = None,
         limit: int = 12,
@@ -528,6 +621,7 @@ class SqlAlchemyMemoryStore:
             player_id=player_id,
             actor_id=actor_id,
             revision=revision,
+            before_action_id=before_action_id,
             entity_ids=entity_ids,
             location_id=location_id,
             limit=limit,
@@ -542,6 +636,7 @@ class SqlAlchemyMemoryStore:
         player_id: str,
         actor_id: str,
         revision: str,
+        before_action_id: str | None = None,
         entity_ids: tuple[str, ...] = (),
         location_id: str | None = None,
         limit: int = 12,
@@ -596,6 +691,25 @@ class SqlAlchemyMemoryStore:
                     == 0
                 )
 
+            head = await session.scalar(
+                select(GameSession.state_version).where(GameSession.room_id == room_id)
+            )
+            allow_unknown = bool(
+                revision.isascii() and revision.isdigit() and int(revision) >= (head or 0)
+            )
+            anchor = None
+            if before_action_id:
+                anchor = await session.scalar(
+                    select(Event)
+                    .where(
+                        Event.room_id == room_id,
+                        Event.event_type.in_(("action.broadcast", "dialogue.player")),
+                        Event.correlation_id.in_((before_action_id, before_action_id + ":player")),
+                    )
+                    .order_by(Event.created_at, Event.id)
+                    .limit(1)
+                )
+
             player_scope_ids = _scope_ids(player_id)
             actor_scope_ids = _scope_ids(actor_id)
             entity_scope_ids = tuple(
@@ -604,7 +718,22 @@ class SqlAlchemyMemoryStore:
             conditions = [
                 MemoryEntryRecord.room_id == stored_room_id,
                 ~MemoryEntryRecord.content.startswith("adjudication:"),
+                _revision_condition(
+                    MemoryEntryRecord.source_revision,
+                    revision,
+                    allow_unknown=allow_unknown,
+                    dialect=session.get_bind().dialect.name,
+                ),
             ]
+            if anchor is not None:
+                # Engine facts from this action are bounded by world revision; presentation
+                # history must stop at the input so retries cannot see later same-version dialogue.
+                conditions.append(
+                    or_(
+                        MemoryEntryRecord.source_sequence > 0,
+                        MemoryEntryRecord.source_created_at < anchor.created_at,
+                    )
+                )
             if mode == "npc":
                 conditions.append(
                     or_(
@@ -650,18 +779,8 @@ class SqlAlchemyMemoryStore:
                         select(MemoryEntryRecord)
                         .where(*conditions)
                         .order_by(
-                            case(
-                                (
-                                    MemoryEntryRecord.epistemic_status.in_(
-                                        ("experienced", "heard")
-                                    ),
-                                    0,
-                                ),
-                                (MemoryEntryRecord.kind == "conversation", 1),
-                                (MemoryEntryRecord.epistemic_status == "presentation", 2),
-                                else_=3,
-                            ),
                             MemoryEntryRecord.source_created_at.desc(),
+                            case((MemoryEntryRecord.epistemic_status == "confirmed", 0), else_=1),
                             MemoryEntryRecord.source_event_id.desc(),
                             MemoryEntryRecord.id.desc(),
                         )
@@ -700,23 +819,54 @@ class SqlAlchemyMemoryStore:
                         error_type=type(exc).__name__,
                     )
                     continue
-                if len(entries) >= limit or total + len(entry.content) > max_chars:
-                    continue
+                if len(entries) >= limit or total >= max_chars:
+                    break
+                # The final entry may be an explicitly marked excerpt, never silently dropped.
+                remaining = max_chars - total
+                if len(entry.content) > remaining:
+                    entry = entry.model_copy(
+                        update={
+                            "content": _excerpt(entry.content, remaining),
+                            "content_truncated": True,
+                        }
+                    )
                 entries.append(entry)
                 total += len(entry.content)
             summary_record = await session.scalar(
                 select(ConversationSummaryRecord).where(
                     ConversationSummaryRecord.room_id == stored_room_id,
                     ConversationSummaryRecord.player_id.in_(player_scope_ids),
+                    _revision_condition(
+                        ConversationSummaryRecord.source_revision,
+                        revision,
+                        allow_unknown=allow_unknown,
+                        dialect=session.get_bind().dialect.name,
+                    ),
                 )
             )
             summary = None
+            if (
+                summary_record
+                and anchor is not None
+                and (
+                    summary_record.through_event_created_at is None
+                    or summary_record.through_event_created_at >= anchor.created_at
+                )
+            ):
+                summary_record = None
             if summary_record and summary_record.summary_json:
                 summary_payload = dict(summary_record.summary_json)
                 summary_payload["room_id"] = room_id
                 summary_payload["player_id"] = player_id
                 try:
                     summary = ConversationSummary.model_validate(summary_payload)
+                    if (
+                        summary.source_revision
+                        and summary.source_revision.isdigit()
+                        and revision.isdigit()
+                        and int(summary.source_revision) > int(revision)
+                    ):
+                        summary = None
                 except ValidationError as exc:
                     logger.warning(
                         "memory_summary_rejected", room_id=room_id, error_type=type(exc).__name__

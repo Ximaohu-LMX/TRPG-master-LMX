@@ -33,6 +33,8 @@ class MemoryEntry(ContractModel):
     kind: MemoryKind
     # Preserve the source; readers, not storage, enforce model input budgets.
     content: str = Field(min_length=1)
+    # 阅读端预算生成的摘录；完整原文仍保留在来源事件和记忆存储中。
+    content_truncated: bool = False
     epistemic_status: MemoryEpistemicStatus
     visibility: MemoryVisibility
     participants: tuple[str, ...] = ()

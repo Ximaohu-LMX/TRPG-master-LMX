@@ -125,6 +125,7 @@ class _MemorySource(Protocol):
         player_id: str,
         actor_id: str,
         revision: str,
+        before_action_id: str | None = None,
         entity_ids: tuple[str, ...] = (),
         location_id: str | None = None,
         limit: int = 8,
@@ -2453,6 +2454,7 @@ class ActionPlanTurnApplication:
                 player_id=player_input.player_id,
                 actor_id=player_input.actor_id,
                 revision=player_view.revision,
+                before_action_id=player_input.client_action_id,
                 location_id=player_view.scene_id,
                 entity_ids=entity_ids,
             )
@@ -2552,6 +2554,7 @@ async def _read_keeper_memory_context(
             player_id=player_input.player_id,
             actor_id=player_input.actor_id,
             revision=player_view.revision,
+            before_action_id=player_input.client_action_id,
             location_id=player_view.scene_id,
             entity_ids=entity_ids,
         )

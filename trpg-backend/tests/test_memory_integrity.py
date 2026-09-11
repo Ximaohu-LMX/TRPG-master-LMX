@@ -219,3 +219,160 @@ async def test_published_narration_records_current_companions_for_later_recall(
     context = await read(memory_store, room, player, actor)
     assert any("一起走出车站" in item.content for item in context.entries)
     assert "resident" not in context.entries[0].participants
+
+
+async def test_late_commit_is_projected_without_replaying_processed_events(
+    db_session, memory_store
+):
+    room, player, actor = await _create_memory_room(db_session, 720)
+    db_session.add(dialogue(room, player, text="先提交但后发生", offset=10))
+    await db_session.commit()
+    await memory_store.project_room_events(room.id)
+    db_session.add(dialogue(room, player, text="较早创建，稍后才提交", offset=2))
+    await db_session.commit()
+    result = await memory_store.project_room_events(room.id)
+    assert result.scanned_events == 1
+    assert result.inserted == 1
+    assert (await memory_store.project_room_events(room.id)).scanned_events == 0
+    assert {entry.content for entry in (await read(memory_store, room, player, actor)).entries} == {
+        "先提交但后发生",
+        "较早创建，稍后才提交",
+    }
+
+
+async def test_legacy_projection_is_rebuilt_with_full_text_and_frozen_audience(
+    db_session, memory_store
+):
+    from app.models.memory import MemoryProjectionCursor
+
+    room, player, actor = await _create_memory_room(db_session, 721)
+    full = "开头" + "原文" * 1200 + "关键尾句"
+    db_session.add_all(
+        [
+            dialogue(room, player, text=full),
+            dialogue(
+                room, player, text="不应公开的旧场景记忆", visibility="scene_scoped", offset=1
+            ),
+        ]
+    )
+    await db_session.commit()
+    await memory_store.project_room_events(room.id)
+    records = list(
+        (
+            await db_session.scalars(
+                select(MemoryEntryRecord).where(MemoryEntryRecord.room_id == room.id)
+            )
+        ).all()
+    )
+    for entry in records:
+        entry.content = entry.content[:2000]
+        entry.visibility = "public"
+    cursor = await db_session.get(MemoryProjectionCursor, room.id)
+    cursor.projection_version = 0
+    await db_session.commit()
+    context = await read(memory_store, room, player, actor)
+    assert [entry.content for entry in context.entries] == [full]
+    assert (await memory_store.project_room_events(room.id)).scanned_events == 0
+
+
+async def test_revision_and_action_boundary_exclude_future_memories_and_summary(
+    db_session, memory_store
+):
+    from collaboration_framework.host.schemas import ConversationSummary
+
+    from app.models.engine import GameSession
+    from app.models.memory import ConversationSummaryRecord
+
+    room, player, actor = await _create_memory_room(db_session, 722)
+    past = dialogue(room, player, text="行动之前已知", offset=1)
+    anchor = dialogue(room, player, text="当前问题", speaker=actor, listeners=("npc",), offset=2)
+    anchor.correlation_id = "snapshot:player"
+    same_revision_later = dialogue(room, player, text="同版本的后续回答", offset=3)
+    future = dialogue(room, player, text="未来事实", offset=4)
+    future.view_revision = "8"
+    unknown = dialogue(room, player, text="版本不可考的旧记录", offset=0)
+    unknown.view_revision = None
+    state = await db_session.get(GameSession, room.id)
+    state.state_version = 8
+    summary = ConversationSummaryRecord(
+        room_id=room.id,
+        player_id=player.id,
+        source_revision="8",
+        through_event_created_at=future.created_at,
+        through_event_id=future.id,
+        summary_json=ConversationSummary(
+            room_id=room.id, player_id=player.id, summary="未来摘要", source_revision="8"
+        ).model_dump(mode="json"),
+    )
+    db_session.add_all([past, anchor, same_revision_later, future, unknown, summary])
+    await db_session.commit()
+    context = await memory_store.read_keeper_context(
+        room_id=room.id,
+        player_id=player.id,
+        actor_id=actor,
+        revision="1",
+        before_action_id="snapshot",
+    )
+    assert [entry.content for entry in context.entries] == ["行动之前已知"]
+    assert context.conversation_summary is None
+    # A summary at the same world revision can still include later dialogue.
+    summary.source_revision = "1"
+    summary.summary_json = {**summary.summary_json, "source_revision": "1"}
+    await db_session.commit()
+    context = await memory_store.read_npc_context(
+        room_id=room.id,
+        player_id=player.id,
+        actor_id=actor,
+        revision="1",
+        before_action_id="snapshot",
+    )
+    assert context.conversation_summary is None
+    latest = await read(memory_store, room, player, actor)
+    assert any(entry.content == "未来事实" for entry in latest.entries)
+
+
+async def test_recent_confirmed_facts_are_not_starved_by_old_dialogue(db_session, memory_store):
+    from app.models.engine import GameEvent
+
+    room, player, actor = await _create_memory_room(db_session, 723)
+    db_session.add_all(
+        [dialogue(room, player, text=f"旧闲谈{index}", offset=index) for index in range(40)]
+    )
+    db_session.add(
+        GameEvent(
+            room_id=room.id,
+            event_id="confirmed-new",
+            sequence=1,
+            client_action_id="new-item",
+            type="entity.moved",
+            actor_id=actor,
+            visibility="public",
+            cause="adjudication:new-item",
+            payload={"entity_id": "key", "holder_actor_id": actor},
+            created_at=datetime(2026, 9, 2, tzinfo=UTC),
+        )
+    )
+    await db_session.commit()
+    context = await read(memory_store, room, player, actor, limit=2)
+    assert context.entries[0].epistemic_status == "confirmed"
+    assert context.entries[0].object_id == "key"
+
+
+async def test_long_memory_uses_marked_excerpt_but_preserves_stored_source(
+    db_session, memory_store
+):
+    room, player, actor = await _create_memory_room(db_session, 724)
+    full = "开始约定" + "正文" * 3000 + "最后约定"
+    source = dialogue(room, player, text=full)
+    db_session.add(source)
+    await db_session.commit()
+    context = await read(memory_store, room, player, actor, max_chars=100)
+    assert len(context.entries) == 1
+    entry = context.entries[0]
+    assert entry.content_truncated
+    assert len(entry.content) == 100
+    assert entry.content.startswith("开始约定") and entry.content.endswith("最后约定")
+    stored = await db_session.scalar(
+        select(MemoryEntryRecord).where(MemoryEntryRecord.room_id == room.id)
+    )
+    assert stored.content == full

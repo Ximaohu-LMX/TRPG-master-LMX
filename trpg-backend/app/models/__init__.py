@@ -40,6 +40,7 @@ from app.models.memory import (
     ConversationSummaryRecord,
     MemoryEntryRecord,
     MemoryProjectionCursor,
+    MemoryProjectionReceipt,
 )
 from app.models.replay import ModuleImportJob, RoomSummary
 from app.models.room import Character, CharacterPortrait, Note, Player, Room
@@ -92,4 +93,5 @@ __all__ = [
     "ConversationSummaryRecord",
     "MemoryEntryRecord",
     "MemoryProjectionCursor",
+    "MemoryProjectionReceipt",
 ]
