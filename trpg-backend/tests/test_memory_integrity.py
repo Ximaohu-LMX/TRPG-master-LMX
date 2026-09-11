@@ -98,3 +98,124 @@ async def test_projection_refresh_failure_keeps_committed_memories(
     )
     context = await read(memory_store, room, player, actor)
     assert [entry.content for entry in context.entries] == ["已经保存的经历"]
+
+
+async def test_npc_can_recall_another_npc_it_heard_in_a_previous_scene(db_session, memory_store):
+    room, player, actor = await _create_memory_room(db_session, 713)
+    spoken = dialogue(room, player, text="桥梁已经封闭。", speaker="other-npc")
+    spoken.payload = {"text": "桥梁已经封闭。", "listenerIds": ["npc"]}
+    db_session.add(spoken)
+    await db_session.commit()
+    context = await read(memory_store, room, player, actor)
+    assert [entry.content for entry in context.entries] == ["桥梁已经封闭。"]
+    assert context.entries[0].listener_ids == ("npc",)
+    assert context.entries[0].subject_id == "other-npc"
+
+
+async def test_authoritative_companion_events_are_readable_cross_scene(db_session, memory_store):
+    from app.models.engine import GameEvent
+
+    room, player, actor = await _create_memory_room(db_session, 714)
+    for sequence, kind, payload in (
+        (1, "entity.state_changed", {"entity_id": "npc", "key": "accompanying", "value": True}),
+        (
+            2,
+            "entity.moved",
+            {"entity_id": "npc", "location_id": "old-scene", "reason": "accompanying"},
+        ),
+    ):
+        db_session.add(
+            GameEvent(
+                room_id=room.id,
+                sequence=sequence,
+                event_id=str(uuid.uuid4()),
+                client_action_id="move",
+                type=kind,
+                actor_id=actor,
+                visibility="public",
+                cause="adjudication:move",
+                payload=payload,
+            )
+        )
+    await db_session.commit()
+    context = await read(memory_store, room, player, actor)
+    assert len(context.entries) == 2
+    assert all(
+        "npc" in entry.participants and entry.object_id == "npc" for entry in context.entries
+    )
+    assert any("一同抵达old-scene" in entry.content for entry in context.entries)
+    assert all(not entry.content.startswith("adjudication:") for entry in context.entries)
+
+
+async def test_structured_check_is_available_to_memory_and_summary(db_session, memory_store):
+    from app.service.conversation_summary import _event_text
+
+    room, player, actor = await _create_memory_room(db_session, 715)
+    check = dialogue(room, player, text="", speaker=actor, visibility="player_scoped")
+    check.event_type = "check.result"
+    check.payload = {
+        "characterName": "调查员",
+        "skillName": "侦查",
+        "rollValue": 12,
+        "targetValue": 60,
+        "successLevel": "hard_success",
+    }
+    db_session.add(check)
+    await db_session.commit()
+    context = await memory_store.read_npc_context(
+        room_id=room.id, player_id=player.id, actor_id=actor, revision="1", location_id="old-scene"
+    )
+    assert len(context.entries) == 1
+    assert context.entries[0].content == _event_text(check)
+    assert "侦查" in context.entries[0].content and "12" in context.entries[0].content
+
+
+async def test_published_narration_records_current_companions_for_later_recall(
+    db_session, memory_store, monkeypatch
+):
+    from collaboration_framework.contracts import PlayerView
+    from collaboration_framework.host.schemas import NarrationOutput
+
+    from app.controller import ws
+
+    room, player, actor = await _create_memory_room(db_session, 716)
+    view = PlayerView(
+        room_id=room.id,
+        player_id=player.id,
+        actor_id=actor,
+        background="公开背景",
+        revision="1",
+        phase="playing",
+        scene_id="old-scene",
+        self_actor={"id": actor, "name": "调查员"},
+        scene={
+            "id": "old-scene",
+            "name": "旧站",
+            "description": "普通车站",
+            "visible_entities": [
+                {
+                    "id": "npc",
+                    "kind": "npc",
+                    "name": "同行者",
+                    "description": "一同旅行的人",
+                    "observable_state": [{"key": "accompanying", "label": "随行", "value": True}],
+                },
+                {"id": "resident", "kind": "npc", "name": "路人", "description": "偶遇的人"},
+            ],
+        },
+    )
+    for name in ("_send_to_player", "_send_view_updated", "_emit_turn_narration"):
+        monkeypatch.setattr(ws, name, AsyncMock())
+    await ws._send_completed_turn_message(
+        db_session,
+        None,
+        room.id,
+        player.id,
+        actor_id=actor,
+        client_action_id="published-companion",
+        player_view=view,
+        narration=NarrationOutput(kind="narration", text="你和同行者一起走出车站。"),
+    )
+    context = await read(memory_store, room, player, actor)
+    assert any("一起走出车站" in item.content for item in context.entries)
+    assert "resident" not in context.entries[0].participants

@@ -13,6 +13,7 @@ from sqlalchemy import and_, delete, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.adapters.conversation_summary import ConversationSummaryModel
+from app.core.event_text import event_text
 from app.models.event import Event, EventAudience
 from app.models.memory import ConversationSummaryRecord
 from app.models.room import Player
@@ -80,12 +81,7 @@ def _scope_ids(value: str) -> tuple[str, ...]:
 
 def _event_text(event: Event) -> str:
     """统一提取摘要可见文本；action.broadcast 使用 utterance 字段。"""
-    payload = event.payload or {}
-    for key in ("text", "utterance", "summary", "description", "content"):
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()[:2000]
-    return ""
+    return event_text(event.event_type, event.payload or {})
 
 
 def _bounded_summary_events(events: list[Event]) -> list[Event]:

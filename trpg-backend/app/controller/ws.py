@@ -2142,6 +2142,23 @@ async def _send_completed_turn_message(
         scene_id=player_view.scene_id,
         view_revision=player_view.revision,
         npc_reply_count=npc_reply_count,
+        participant_ids=tuple(
+            dict.fromkeys(
+                (
+                    actor_id,
+                    *(reply.speaker_id for reply in npc_replies),
+                    *(
+                        entity.id
+                        for entity in player_view.scene.visible_entities
+                        if entity.kind == "npc"
+                        and any(
+                            state.key == "accompanying" and state.value is True
+                            for state in entity.observable_state
+                        )
+                    ),
+                )
+            )
+        ),
     )
     if before_completed is not None:
         await before_completed()
@@ -2551,6 +2568,7 @@ async def _persist_turn_narration(
     view_revision: str,
     npc_reply_count: int = 0,
     npc_replies: tuple[ActionPlanNpcReply, ...] = (),
+    participant_ids: tuple[str, ...] = (),
 ) -> tuple[bool, NarrationOutput]:
     """Persist one authoritative narration before its completion is announced."""
 
@@ -2561,6 +2579,8 @@ async def _persist_turn_narration(
         text=text,
     )
     payload = push.model_dump(by_alias=True)
+    # These identities come from the committed view, never from parsing prose.
+    payload["participantIds"] = list(dict.fromkeys((actor_id, *participant_ids)))
     payload[room_service.PERSISTED_TURN_COMPLETION_KEY] = {
         "kind": completion.kind,
         "claimed_fact_ids": list(completion.claimed_fact_ids),

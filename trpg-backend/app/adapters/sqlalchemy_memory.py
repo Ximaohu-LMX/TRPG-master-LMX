@@ -20,6 +20,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.event_text import event_text, game_event_text, payload_ids
 from app.models.engine import GameEvent
 from app.models.event import Event, EventAudience
 from app.models.memory import (
@@ -78,22 +79,13 @@ def _scope_ids(value: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys((value, canonical)))
 
 
-def _text(payload: dict) -> str:
-    """只抽取玩家安全的展示文本，未知 payload 不升级为事实。"""
-    for key in ("text", "utterance", "summary", "description", "content"):
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
-
-
 def _memory_from_event(
     event: Event,
     *,
     audience_player_ids: tuple[str, ...] = (),
 ) -> MemoryEntry | None:
     """把公开行动/叙事事件转换成可审计的 presentation 记忆。"""
-    text = _text(event.payload or {})
+    text = event_text(event.event_type, event.payload or {})
     if not text:
         return None
     if event.event_type in {"narration.push", "dialogue.player", "dialogue.npc"}:
@@ -117,7 +109,11 @@ def _memory_from_event(
         visibility=typing_cast(MemoryVisibility, event.visibility),
         participants=tuple(
             canonical
-            for x in (event.player_id, event.actor_id)
+            for x in (
+                event.player_id,
+                event.actor_id,
+                *payload_ids(event.payload or {}, "participant_ids", "participantIds"),
+            )
             if (canonical := _canonical_id(x)) is not None
         ),
         listener_ids=tuple(
@@ -184,12 +180,14 @@ def _listener_memories(
 
 def _memory_from_game_event(event: GameEvent) -> MemoryEntry | None:
     """把公开权威事件投影为 confirmed/ex-perienced 记忆。"""
-    text = _text(event.payload or {}) or event.cause.strip()
+    text = game_event_text(event.type, event.payload or {}, event.actor_id)
     if not text:
         return None
-    if event.type == "location.entered":
+    if event.type in {"location.entered", "travel.resolved"}:
         kind = "visit"
-    elif "discover" in event.type or "fact" in event.type:
+    elif event.type == "entity.state_changed" and event.payload.get("key") == "accompanying":
+        kind = "relationship_change"
+    elif "discover" in event.type or "fact" in event.type or event.type == "information.revealed":
         kind = "clue"
     elif event.type.startswith("action."):
         kind = "action"
@@ -199,15 +197,28 @@ def _memory_from_game_event(event: GameEvent) -> MemoryEntry | None:
         memory_id=f"game-event:{event.event_id}",
         room_id=event.room_id,
         subject_id=event.actor_id,
+        object_id=event.payload.get("entity_id"),
         kind=kind,
         content=text,
         epistemic_status="confirmed",
         visibility="public" if event.visibility == "public" else "entity_scoped",
-        participants=(event.actor_id,),
+        participants=tuple(
+            dict.fromkeys(
+                item
+                for item in (
+                    event.actor_id,
+                    event.payload.get("entity_id"),
+                    event.payload.get("holder_actor_id"),
+                )
+                if isinstance(item, str) and item
+            )
+        ),
         listener_ids=(),
         audience_player_ids=(),
         source_event_id=event.event_id,
         source_sequence=event.sequence,
+        source_revision=str(event.sequence),
+        location_id=event.payload.get("location_id") or event.payload.get("destination_id"),
     )
 
 
@@ -551,11 +562,14 @@ class SqlAlchemyMemoryStore:
             )
         async with self._session_factory() as session:
 
-            def participant_has(item: str):
+            def array_has(column, item: str):
                 if session.get_bind().dialect.name == "sqlite":
-                    values = func.json_each(MemoryEntryRecord.participants).table_valued("value")
+                    values = func.json_each(column).table_valued("value")
                     return exists(select(1).select_from(values).where(values.c.value == item))
-                return cast(MemoryEntryRecord.participants, JSONB).contains([item])
+                return cast(column, JSONB).contains([item])
+
+            def participant_has(item: str):
+                return array_has(MemoryEntryRecord.participants, item)
 
             def audience_has(item: str):
                 if session.get_bind().dialect.name == "sqlite":
@@ -621,6 +635,7 @@ class SqlAlchemyMemoryStore:
                     MemoryEntryRecord.subject_id.in_(entity_scope_ids),
                     MemoryEntryRecord.object_id.in_(entity_scope_ids),
                     *(participant_has(item) for item in entity_scope_ids),
+                    *(array_has(MemoryEntryRecord.listener_ids, item) for item in entity_scope_ids),
                 )
                 conditions.append(
                     or_(
