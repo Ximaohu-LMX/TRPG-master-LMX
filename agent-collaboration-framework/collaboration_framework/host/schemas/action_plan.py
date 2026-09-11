@@ -433,6 +433,13 @@ class ActionPlanStepContext(ContractModel):
                 player_input=self.player_input,
                 player_view=self.player_view,
             )
+        if any(entry.room_id != self.player_input.room_id for entry in self.memories):
+            raise ValueError("ActionPlanStepContext memories room_id 不一致")
+        if self.conversation_summary is not None and (
+            self.conversation_summary.room_id != self.player_input.room_id
+            or self.conversation_summary.player_id != self.player_input.player_id
+        ):
+            raise ValueError("ActionPlanStepContext conversation summary scope 不一致")
         _validate_keeper_scope(self.keeper_capabilities, self.player_view)
         return self
 

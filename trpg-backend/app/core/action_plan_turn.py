@@ -8,6 +8,7 @@ import time
 import traceback
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Literal, Protocol, cast
 
 import structlog
@@ -2459,47 +2460,6 @@ class ActionPlanTurnApplication:
             logger.warning("memory_context_degraded", error_type=type(exc).__name__)
             return empty
 
-    async def _read_keeper_memory_context(
-        self,
-        *,
-        player_input: PlayerInput,
-        player_view: PlayerView,
-    ) -> MemoryContext:
-        """Keeper 读取保持 room 级历史，不再按玩家受众收窄。"""
-
-        empty = MemoryContext(
-            room_id=player_input.room_id,
-            player_id=player_input.player_id,
-            actor_id=player_input.actor_id,
-            as_of_revision=player_view.revision,
-        )
-        if self._memory_source is None:
-            return empty
-        try:
-            entity_ids = _matching_visible_entity_ids(
-                player_input.utterance,
-                player_view,
-            )
-            if (
-                player_input.interlocutor_id is not None
-                and player_input.interlocutor_id not in entity_ids
-            ):
-                entity_ids = (*entity_ids, player_input.interlocutor_id)
-            read_keeper_context = getattr(self._memory_source, "read_keeper_context", None)
-            if read_keeper_context is None:
-                read_keeper_context = self._memory_source.read_context
-            return await read_keeper_context(
-                room_id=player_input.room_id,
-                player_id=player_input.player_id,
-                actor_id=player_input.actor_id,
-                revision=player_view.revision,
-                location_id=player_view.scene_id,
-                entity_ids=entity_ids,
-            )
-        except Exception as exc:  # noqa: BLE001 - 读模型故障必须 fail-open
-            logger.warning("keeper_memory_context_degraded", error_type=type(exc).__name__)
-            return empty
-
     async def _narration_addressing(
         self,
         context: ActionPlanNarrationContext,
@@ -2549,6 +2509,55 @@ class _EmptyRecentHistorySource:
     ) -> RecentTurnContext:
         del exclude_correlation_id, budget
         return RecentTurnContext.empty(player_input=player_input, player_view=player_view)
+
+
+async def _read_keeper_memory_context(
+    memory_source: _MemorySource | None,
+    player_input: PlayerInput,
+    player_view: PlayerView,
+) -> MemoryContext:
+    """Keeper 读取保持 room 级历史，不再按玩家受众收窄。"""
+
+    empty = MemoryContext(
+        room_id=player_input.room_id,
+        player_id=player_input.player_id,
+        actor_id=player_input.actor_id,
+        as_of_revision=player_view.revision,
+    )
+    if memory_source is None:
+        return empty
+    try:
+        entity_ids = tuple(
+            dict.fromkeys(
+                (
+                    *_matching_visible_entity_ids(player_input.utterance, player_view),
+                    *(
+                        entity.id
+                        for entity in player_view.scene.visible_entities
+                        if entity.kind == "npc"
+                    ),
+                )
+            )
+        )
+        if (
+            player_input.interlocutor_id is not None
+            and player_input.interlocutor_id not in entity_ids
+        ):
+            entity_ids = (*entity_ids, player_input.interlocutor_id)
+        read_keeper_context = getattr(memory_source, "read_keeper_context", None)
+        if read_keeper_context is None:
+            read_keeper_context = memory_source.read_context
+        return await read_keeper_context(
+            room_id=player_input.room_id,
+            player_id=player_input.player_id,
+            actor_id=player_input.actor_id,
+            revision=player_view.revision,
+            location_id=player_view.scene_id,
+            entity_ids=entity_ids,
+        )
+    except Exception as exc:  # noqa: BLE001 - 读模型故障必须 fail-open
+        logger.warning("keeper_memory_context_degraded", error_type=type(exc).__name__)
+        return empty
 
 
 def build_action_plan_turn_application(
@@ -2689,6 +2698,7 @@ def build_action_plan_turn_application(
         on_step_failure=_log_step_adjudication_failure,
         recent_history_source=(history_source if resolved.recent_history_enabled else None),
         recent_history_budget=recent_history_budget,
+        memory_reader=partial(_read_keeper_memory_context, memory_source),
     )
     return ActionPlanTurnApplication(
         store=store,

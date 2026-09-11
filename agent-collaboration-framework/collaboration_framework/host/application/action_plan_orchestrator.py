@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import uuid4
@@ -49,6 +50,7 @@ from collaboration_framework.host.schemas import (
     ActionPlanStepContext,
     ActionPlanStepRun,
     CompletedPlanStepSummary,
+    MemoryContext,
     RecentHistoryBudget,
     RecentTurnContext,
 )
@@ -135,6 +137,8 @@ class ActionPlanOrchestrator:
         on_step_failure: ActionPlanStepFailureObserver | None = None,
         recent_history_source: RecentHistorySource | None = None,
         recent_history_budget: RecentHistoryBudget | None = None,
+        memory_reader: Callable[[PlayerInput, PlayerView], Awaitable[MemoryContext]]
+        | None = None,
     ) -> None:
         if lease_seconds < 1:
             raise ValueError("lease_seconds 必须大于 0")
@@ -146,6 +150,7 @@ class ActionPlanOrchestrator:
         self._lease_seconds = lease_seconds
         self._on_step_failure = on_step_failure
         self._recent_history_source = recent_history_source
+        self._memory_reader = memory_reader
         self._recent_history_budget = recent_history_budget or RecentHistoryBudget()
 
     @property
@@ -954,6 +959,36 @@ class ActionPlanOrchestrator:
             )
             return None
 
+    async def _memory(
+        self, player_input: PlayerInput, view: PlayerView
+    ) -> MemoryContext:
+        empty = MemoryContext(
+            room_id=player_input.room_id,
+            player_id=player_input.player_id,
+            actor_id=player_input.actor_id,
+            as_of_revision=view.revision,
+        )
+        if self._memory_reader is None:
+            return empty
+        try:
+            memory = await self._memory_reader(player_input, view)
+            if any(
+                getattr(memory, key) != getattr(empty, key)
+                for key in ("room_id", "player_id", "actor_id", "as_of_revision")
+            ):
+                raise ValueError("step memory scope mismatch")
+            return memory
+        except Exception as exc:
+            logger.warning(
+                "action_plan_step_memory_degraded",
+                extra={
+                    "room_id": player_input.room_id,
+                    "correlation_id": player_input.client_action_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return empty
+
     async def _freeze_current_adjudication(
         self,
         run: ActionPlanRun,
@@ -970,6 +1005,7 @@ class ActionPlanOrchestrator:
             run = await self._replace_steps(run, tuple(steps))
             current = run.steps[index]
         view = await self._player_view_projector.project(player_input)
+        memory = await self._memory(player_input, view)
         context = ActionPlanStepContext(
             player_input=player_input,
             plan_id=run.plan_id,
@@ -980,6 +1016,8 @@ class ActionPlanOrchestrator:
             player_view=view,
             completed_steps=self._completed_summaries(run),
             recent_history=await self._recent_history(player_input, view),
+            memories=memory.entries,
+            conversation_summary=memory.conversation_summary,
             previous_rejection=self._validation_feedback_text(current),
             keeper_capabilities=await self._keeper_capabilities(player_input, view),
         )

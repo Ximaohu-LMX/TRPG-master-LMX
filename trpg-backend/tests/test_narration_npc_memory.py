@@ -1,5 +1,6 @@
 """Narration retrieves memories for NPCs visible after authoritative travel."""
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -11,12 +12,14 @@ from collaboration_framework.engine import (
     RuleEngineService,
 )
 from collaboration_framework.engine.initialization import create_initial_game_state
-from collaboration_framework.host.schemas import ActionPlanStepContext
+from collaboration_framework.host.schemas import ActionPlanStepContext, ConversationSummary
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.action_plan_turn import build_action_plan_turn_application
 from app.core.config import Settings
 from app.models.event import Event
+from app.models.memory import ConversationSummaryRecord
+from app.models.room import Player
 from tests.test_accompanying_host import FIXTURE, travel
 from tests.test_memory_system import _create_memory_room
 
@@ -76,22 +79,54 @@ async def test_narration_reads_cross_scene_memories_for_post_travel_npcs(
                 created_at=start + timedelta(seconds=index),
             )
         )
+    other_player = Player(id=str(uuid.uuid4()), room_id=room.id, nickname="其他玩家")
+    keeper_only_memory = "其他玩家私下说过的审计口令。"
+    db_session.add_all(
+        [
+            other_player,
+            Event(
+                room_id=room.id,
+                player_id=other_player.id,
+                actor_id="mrs_lane",
+                event_type="dialogue.npc",
+                visibility="player_scoped",
+                scene_id="resort_reception",
+                view_revision="0",
+                payload={"text": keeper_only_memory},
+                created_at=start,
+            ),
+            ConversationSummaryRecord(
+                room_id=room.id,
+                player_id=player.id,
+                summary_json=ConversationSummary(
+                    room_id=room.id,
+                    player_id=player.id,
+                    summary="已经谈过一同前往庄园。",
+                    source_revision="0",
+                ).model_dump(mode="json"),
+            ),
+        ]
+    )
     await db_session.commit()
 
     class Client:
         def __init__(self):
             self.calls = []
             self.narration_input = None
+            self.step_input = None
+            self.plan_input = None
 
         async def generate(self, *, schema_name, schema, instructions, input_payload):
             self.calls.append(schema_name)
             if schema_name == "trpg_turn_plan":
+                self.plan_input = input_payload
                 return {
                     "kind": "action_plan",
                     "goal": "前往莱恩庄园",
                     "steps": [{"kind": "travel", "semantic_goal": "前往莱恩庄园"}],
                 }
             if schema_name == "trpg_action_plan_step_adjudication":
+                self.step_input = input_payload
                 return travel(
                     ActionPlanStepContext.model_validate(input_payload), "lane_manor"
                 ).to_json_dict()
@@ -139,3 +174,10 @@ async def test_narration_reads_cross_scene_memories_for_post_travel_npcs(
         "trpg_action_plan_step_adjudication",
         "trpg_action_plan_narration",
     ]
+
+    assert client.step_input is not None and client.plan_input is not None
+    assert client.step_input["memories"]
+    assert client.step_input["conversation_summary"]["summary"] == "已经谈过一同前往庄园。"
+    assert any(entry["content"] == keeper_only_memory for entry in client.step_input["memories"])
+    for payload in (client.plan_input, client.narration_input):
+        assert all(entry["content"] != keeper_only_memory for entry in payload["memories"])
