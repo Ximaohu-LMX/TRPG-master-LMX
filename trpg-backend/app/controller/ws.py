@@ -3562,15 +3562,21 @@ async def room_socket(websocket: WebSocket, room_id: str, token: str | None = No
                                 )
                     elif event_type == "action.plan.submit":
                         submit_payload = ActionSubmitPayload.model_validate(raw_payload)
-                        room = await room_service.find_room_by_id(db, room_id)
-                        if room.max_players > 1 and not submit_payload.recipient.explicit:
-                            await _send_error(
-                                websocket,
-                                "BAD_REQUEST",
-                                "多人游戏必须明确 @守秘人 后才能提交主持行动",
-                                correlation_id=submit_payload.client_action_id,
+                        if not submit_payload.recipient.explicit:
+                            # 按实际成员判断单人游玩；容量和队友临时断线不改变消息路由。
+                            other_player_id = await db.scalar(
+                                select(Player.id)
+                                .where(Player.room_id == room_id, Player.id != bound_player_id)
+                                .limit(1)
                             )
-                            continue
+                            if other_player_id is not None:
+                                await _send_error(
+                                    websocket,
+                                    "BAD_REQUEST",
+                                    "多人游戏必须明确 @守秘人 后才能提交主持行动",
+                                    correlation_id=submit_payload.client_action_id,
+                                )
+                                continue
                         if submit_payload.visibility == "private":
                             await _send_error(
                                 websocket,
