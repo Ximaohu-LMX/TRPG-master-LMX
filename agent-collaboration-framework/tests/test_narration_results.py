@@ -7,6 +7,8 @@ from collaboration_framework.contracts import (
     CommittedResult,
     KnownInformationView,
     NarrationEvidence,
+    ObservableStateView,
+    VisibleEntity,
 )
 from collaboration_framework.engine import AdjudicationEngineService
 from collaboration_framework.engine.models import DomainEvent, EngineRuntimeSnapshot
@@ -429,3 +431,87 @@ async def test_narration_prompt_preserves_scene_and_results_without_duplicate_so
         "termination_status",
     ):
         assert payload[key] == original_json[key]
+
+
+@pytest.mark.asyncio
+async def test_narration_prompt_identifies_companions_from_current_public_state():
+    service, _, _, _, _ = orchestrator()
+    original = player_input()
+    await service.start_or_resume(original, plan=plan(2))
+    context = await service.build_narration_context(original)
+    companion = VisibleEntity(
+        id="companion",
+        kind="npc",
+        name="同行者",
+        description="公开人物外貌",
+        observable_state=(
+            ObservableStateView(
+                key="accompanying",
+                label="随行",
+                value=True,
+            ),
+        ),
+    )
+    former = companion.model_copy(
+        update={
+            "id": "former-companion",
+            "observable_state": (
+                ObservableStateView(
+                    key="accompanying",
+                    label="随行",
+                    value=False,
+                ),
+            ),
+        }
+    )
+    resident = companion.model_copy(update={"id": "resident", "observable_state": ()})
+    malformed = companion.model_copy(
+        update={
+            "id": "unconfirmed",
+            "observable_state": (
+                ObservableStateView(
+                    key="accompanying",
+                    label="随行",
+                    value="true",
+                ),
+            ),
+        }
+    )
+    carried_object = companion.model_copy(update={"id": "object", "kind": "object"})
+    view = context.player_view.model_copy(
+        update={
+            "scene": context.player_view.scene.model_copy(
+                update={
+                    "visible_entities": (
+                        companion,
+                        former,
+                        resident,
+                        malformed,
+                        carried_object,
+                    ),
+                }
+            ),
+        }
+    )
+    context = context.model_copy(update={"player_view": view})
+    original_json = context.to_json_dict()
+    payload = context.to_prompt_dict()
+    assert payload["accompanying_npcs"] == [{"id": "companion", "name": "同行者"}]
+    assert payload["player_view"]["scene"] == original_json["player_view"]["scene"]
+    assert context.to_json_dict() == original_json
+
+    # Losing public visibility or ending the relation removes the hint even if
+    # earlier prose still says the character followed the party.
+    context = context.model_copy(
+        update={
+            "previous_published_narration": "同行者和你一起离开了大厅。",
+            "player_view": view.model_copy(
+                update={
+                    "scene": view.scene.model_copy(
+                        update={"visible_entities": (former, resident)}
+                    ),
+                }
+            ),
+        }
+    )
+    assert context.to_prompt_dict()["accompanying_npcs"] == []

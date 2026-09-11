@@ -2008,10 +2008,10 @@ class ActionPlanTurnApplication:
                     context = context.model_copy(
                         update={
                             "narration_retry_hint": (
-                                "本回合已经单独发出 NPC 气泡，守秘人正文里不得再出现"
-                                "任何引号或 NPC 的直接引语。请把台词全部放进 npc_replies，"
-                                "正文只写动作、神情、语气和现场变化，例如"
-                                "“他沉默片刻才开口”而不是把他说的话抄进正文。"
+                                "同一输出的 NPC 台词应只放进 npc_replies，"
+                                "守秘人正文不要用引号重抄或转述台词。"
+                                "保留必要的已确认结果；普通对话的旁白通常一句即可，"
+                                "自然引入实际回答，不要为分开气泡编造沉默或堆叠神态动作。"
                             )
                         }
                     )

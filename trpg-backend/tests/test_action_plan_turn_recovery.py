@@ -621,7 +621,7 @@ def _evidence() -> NarrationEvidence:
 async def test_npc_dialogue_rejection_retries_with_an_actionable_hint() -> None:
     """第 6 关此前只拿到通用提示，模型不知道错在引号上，重试必然空转。"""
     application = object.__new__(ActionPlanTurnApplication)
-    success = SimpleNamespace(kind="narration", text="他沉默片刻才开口。", npc_replies=())
+    success = SimpleNamespace(kind="narration", text="他简短地回答。", npc_replies=())
     narrate = AsyncMock(
         side_effect=[
             ActionPlanNarrationValidationError("npc_dialogue_embedded_in_text"),

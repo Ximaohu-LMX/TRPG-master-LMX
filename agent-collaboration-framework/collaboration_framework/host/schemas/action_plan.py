@@ -479,7 +479,7 @@ class ActionPlanNarrationContext(ContractModel):
     forbidden_disclosure_terms: tuple[str, ...] = Field(default=(), exclude=True)
 
     def to_prompt_dict(self) -> JsonObject:
-        """Keep scene and committed facts; omit choices and duplicate source bodies."""
+        """Project public companions and facts without changing the stored context."""
 
         payload = self.to_json_dict()
         view = self.player_view.to_json_dict()
@@ -496,6 +496,18 @@ class ActionPlanNarrationContext(ContractModel):
             if item.id not in information_ids
         ]
         payload["player_view"] = view
+        # Companions remain visible entities, but their presence is not a new
+        # encounter. Derive this cue only from the final public state, never
+        # from module placement, old dialogue, or an earlier follow request.
+        payload["accompanying_npcs"] = [
+            {"id": entity.id, "name": entity.name}
+            for entity in self.player_view.scene.visible_entities
+            if entity.kind == "npc"
+            and any(
+                state.key == "accompanying" and state.value is True
+                for state in entity.observable_state
+            )
+        ]
         payload["completed_steps"] = [
             step.model_dump(mode="json", exclude={"narration_evidence"})
             for step in self.completed_steps
