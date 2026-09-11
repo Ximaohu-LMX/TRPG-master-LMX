@@ -264,8 +264,7 @@ def _opening_retry_hint(
         names = "、".join(participant.name for participant in context.participants)
         return (
             "上一版开场没有逐字写出全部玩家角色的姓名。必须在正文中原样出现："
-            f"{names}。这些是玩家自己起的名字，不得改写、简称、翻译或用称谓替代，"
-            "即使它读起来不像人名。"
+            f"{names}。不得改写、简称、翻译或用称谓替代。"
         )
     if reason == "subject_ownership":
         return (

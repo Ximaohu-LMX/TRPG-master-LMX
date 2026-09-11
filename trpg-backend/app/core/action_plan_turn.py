@@ -2010,10 +2010,8 @@ class ActionPlanTurnApplication:
                     context = context.model_copy(
                         update={
                             "narration_retry_hint": (
-                                "同一输出的 NPC 台词应只放进 npc_replies，"
-                                "守秘人正文不要用引号重抄或转述台词。"
-                                "保留必要的已确认结果；普通对话的旁白通常一句即可，"
-                                "自然引入实际回答，不要为分开气泡编造沉默或堆叠神态动作。"
+                                "NPC 台词只放进 npc_replies，text 保留已确认结果并简短引入回答，"
+                                "不重复或转述台词；旁白与实际回答须一致。"
                             )
                         }
                     )

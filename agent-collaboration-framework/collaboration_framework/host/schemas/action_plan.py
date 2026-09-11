@@ -567,15 +567,11 @@ class ActionPlanNpcReply(ContractModel):
 
 
 class NarrationStateClaim(ContractModel):
-    """叙事自报的一条持久状态断言，供服务端做集合包含校验。
-
-    ``value`` 不用 ``JsonValue``：``CommittedResult.state_value`` 实际只出现字符串
-    与布尔两种（``"unconscious"`` / ``True``），而 ``JsonValue`` 会在结构化输出的
-    JSON Schema 里展开成一大片 anyOf，拖低模型对整个 schema 的遵从度。
-    """
+    """叙事中一条有已提交结果或当前公开状态支持的持久状态断言。"""
 
     entity_id: str = Field(min_length=1)
     key: str = Field(min_length=1)
+    # 与 CommittedResult.state_value 的类型保持一致，避免 JsonValue 展开过大的 schema。
     value: str | bool
 
 

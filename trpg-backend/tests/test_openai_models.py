@@ -78,8 +78,8 @@ def test_host_entry_instructions_clarify_when_information_is_insufficient() -> N
     text = PromptHostEntryModel._INSTRUCTIONS
     assert "needs_clarification" in text
     assert "不足以唯一确定" in text
-    assert "都属于信息不足" in text
-    assert "不要把这种不足直接交给旧链去猜" in text
+    assert "player_answer" in text
+    assert "rule_once" in text and "delegate_to_legacy" in text
 
 
 def test_action_plan_narration_uses_final_post_roll_outcome() -> None:
@@ -155,8 +155,8 @@ def test_opening_narration_mentions_named_actor_mode() -> None:
 
 
 def test_action_plan_narration_preserves_completed_travel_before_clarification() -> None:
-    assert "completed_steps 已有成功的旅行步骤" in (_ACTION_PLAN_NARRATION_INSTRUCTIONS)
-    assert "绝不得说\n该地点没找到" in _ACTION_PLAN_NARRATION_INSTRUCTIONS
+    assert "已提交结果不因后续失败或澄清而撤销" in _ACTION_PLAN_NARRATION_INSTRUCTIONS
+    assert "不预设目的地不存在" in _ACTION_PLAN_NARRATION_INSTRUCTIONS
 
 
 @pytest.mark.parametrize("scene_changed", [False, True])
