@@ -619,7 +619,7 @@ def _evidence() -> NarrationEvidence:
 
 @pytest.mark.asyncio
 async def test_npc_dialogue_rejection_retries_with_an_actionable_hint() -> None:
-    """第 6 关此前只拿到通用提示，模型不知道错在引号上，重试必然空转。"""
+    """重试必须明确区分守秘人正文与 NPC 回复，避免原样重写后再次被拒。"""
     application = object.__new__(ActionPlanTurnApplication)
     success = SimpleNamespace(kind="narration", text="他简短地回答。", npc_replies=())
     narrate = AsyncMock(
@@ -635,7 +635,8 @@ async def test_npc_dialogue_rejection_retries_with_an_actionable_hint() -> None:
 
     assert narration is success
     retry_hint = narrate.await_args_list[1].args[0].narration_retry_hint
-    assert "引号" in retry_hint
+    assert "NPC 台词" in retry_hint
+    assert "text" in retry_hint
     assert "npc_replies" in retry_hint
 
 

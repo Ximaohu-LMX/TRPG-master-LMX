@@ -2005,8 +2005,8 @@ class ActionPlanTurnApplication:
                         }
                     )
                 elif attempt == 0 and exc.reason == "npc_dialogue_embedded_in_text":
-                    # 通用提示只说“没通过校验”，模型无从知道错在引号上，于是原样
-                    # 再写一遍、再被同一关拒掉——重试对这一类必然空转。
+                    # 通用提示只说“没通过校验”，模型无从知道 text 中混入了 NPC
+                    # 台词，于是原样再写一遍、再被同一关拒掉——重试会必然空转。
                     context = context.model_copy(
                         update={
                             "narration_retry_hint": (

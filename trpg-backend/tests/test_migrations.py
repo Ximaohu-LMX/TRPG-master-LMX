@@ -13,8 +13,9 @@ PREVIOUS_REVISION = "1a02058345ee"
 ENGINE_IDENTITY_PREVIOUS_REVISION = "9c4e7a2b1d6f"
 # PR2 NPC 对话迁移（d1e2f3a4b5c6）接在 PR1 输入路由 head 后面；#398 的检定唯一
 # 约束放宽（b8c9d0e1f2a3）再接在它之后，最后是模组快照的死字段剥离。
-# 时间点回填与摘要复合游标各自形成分支后，由空迁移重新汇合为单一 head。
-HEAD_REVISION = "i2j3k4l5m6n7"
+# 时间点回填与摘要复合游标各自形成分支后，由空迁移重新汇合；记忆投影与摘要
+# 来源收据迁移依次接在汇合点之后，形成当前单一 head。
+HEAD_REVISION = "k4l5m6n7o8p9"
 
 
 def _run_alembic(database: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -100,6 +101,8 @@ def test_migration_upgrades_empty_sqlite_and_round_trips(tmp_path: Path) -> None
         "memory_entries",
         "conversation_summaries",
         "memory_projection_cursors",
+        "memory_projection_receipts",
+        "conversation_summary_receipts",
         "turn_run_cutover",
         "scene_transition_proposals",
         "host_action_queue",
@@ -204,12 +207,20 @@ def test_migration_upgrades_empty_sqlite_and_round_trips(tmp_path: Path) -> None
     assert ("room_id", "event_type", "correlation_id") in _unique_column_sets(database, "events")
     assert "source_created_at" in _column_names(database, "memory_entries")
     assert "audience_player_ids" in _column_names(database, "memory_entries")
+    assert "projection_version" in _column_names(database, "memory_projection_cursors")
     assert {
         "through_event_created_at",
         "through_event_id",
         "pending_event_created_at",
         "pending_event_id",
+        "projection_version",
     }.issubset(_column_names(database, "conversation_summaries"))
+    assert {"room_id", "source_kind", "source_id"} == _column_names(
+        database, "memory_projection_receipts"
+    )
+    assert {"summary_id", "event_id", "consumed_chars", "complete"} == _column_names(
+        database, "conversation_summary_receipts"
+    )
 
     downgrade = _run_alembic(database, "downgrade", PREVIOUS_REVISION)
     assert downgrade.returncode == 0, downgrade.stdout + downgrade.stderr
