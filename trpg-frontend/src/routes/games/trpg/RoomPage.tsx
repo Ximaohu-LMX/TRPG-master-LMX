@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { RoomSocketServerError, TurnFailedError, type RoomSocketConnectionState, type AdjudicationPendingPayload, type AgentPlayerView, type AgentTurnPhase, type CheckRequestPayload, type CheckResultPayload, type EndingDraft, type NarrationPushPayload, type RoomActionStatePayload, type RoomConversationEvent, type RoomPlayerSummary, type SceneTransitionPendingPayload, type TimeAdvancePendingPayload } from 'trpg-sdk'
-import { ArrowLeft, Users, Map, MapPin, BookOpen, ScrollText, Star, X, SendHorizontal, Plus, Save, FlagOff, Heart, Brain, Volume2, Pause, Play, Square, RotateCcw, Mic, LoaderCircle, Clock3, Check, ChevronDown, ChevronRight } from 'lucide-react'
-import { useCallback, useState, useRef, useEffect, useMemo, type Dispatch, type FormEvent, type SetStateAction } from 'react'
+import { ArrowLeft, Users, Map, MapPin, BookOpen, ScrollText, Star, X, SendHorizontal, FlagOff, Heart, Brain, Volume2, Pause, Play, Square, RotateCcw, Mic, LoaderCircle, Clock3, Check, ChevronRight } from 'lucide-react'
+import { useCallback, useState, useRef, useEffect, useMemo, type Dispatch, type FormEvent, type ReactNode, type SetStateAction } from 'react'
 import { useRoomStore } from '@/stores/room-store'
 import { useAuthStore } from '@/stores/auth-store'
 import { useRoomCharacter } from '@/hooks/useRoomCharacter'
@@ -12,7 +12,8 @@ import { usePlayerPortraits } from '@/hooks/usePlayerPortraits'
 import { useRuleset } from '@/hooks/useRuleset'
 import { useHostSpeech } from '@/hooks/useHostSpeech'
 import { useRoomPanelState, type RoomPanelEntry } from '@/hooks/useRoomPanelState'
-import { InformationDisclosure, UnreadDot } from '@/features/room-information/InformationDisclosure'
+import { InformationDisclosure, InformationSection, UnreadDot } from '@/features/room-information/InformationDisclosure'
+import { ClueRecords } from '@/features/room-information/ClueRecords'
 import { INSECURE_SPEECH_UNAVAILABLE_REASON, useSpeechInput } from '@/hooks/useSpeechInput'
 import { Dice3DStage, supports3DDice, type Dice3DHandle, type DiceRollToken } from '@/features/dice3d'
 import { OnboardingTrigger } from '@/features/onboarding'
@@ -253,7 +254,6 @@ const EMPTY_ROOM_PLAYERS: RoomPlayerSummary[] = []
 
 interface MapLocation {
   id: string
-  icon: string
   name: string
   desc: string
   depth: number
@@ -295,7 +295,6 @@ function mapLocationsFromPlayerView(playerView: AgentPlayerView | null): MapLoca
   if (!playerView) {
     return [{
       id: 'waiting-for-view',
-      icon: '📍',
       name: '等待场景同步',
       desc: '进入游戏后由规则引擎提供当前位置',
       depth: 0,
@@ -328,15 +327,6 @@ function mapLocationsFromPlayerView(playerView: AgentPlayerView | null): MapLoca
               : '已知地点'
         ordered.push({
           id: location.id,
-          icon: isCurrent
-            ? '📍'
-            : location.kind === 'region'
-              ? '🗺️'
-              : location.kind === 'connector'
-                ? '🛣️'
-                : location.kind === 'room'
-                  ? '🚪'
-                  : '🏛️',
           name: location.name,
           desc: isCurrent
             ? playerView.scene.description || '当前所在场景'
@@ -365,7 +355,6 @@ function mapLocationsFromPlayerView(playerView: AgentPlayerView | null): MapLoca
   }
   const current: MapLocation = {
     id: playerView.scene.id,
-    icon: '📍',
     name: playerView.scene.name,
     desc: playerView.scene.description || '当前所在场景',
     depth: 0,
@@ -378,13 +367,70 @@ function mapLocationsFromPlayerView(playerView: AgentPlayerView | null): MapLoca
     seen.add(id)
     return [{
       id,
-      icon: exit.destination ? '🧭' : '🚪',
       name: exit.destination?.name ?? exit.name,
       desc: exit.description || `可经「${exit.name}」到达`,
       depth: 0,
     }]
   })
   return [current, ...exits]
+}
+
+function MapLocationTree({ locations, unreadIds, isExpanded, onToggle }: {
+  locations: MapLocation[]
+  unreadIds: ReadonlySet<string>
+  isExpanded: (id: string) => boolean
+  onToggle: (id: string) => void
+}) {
+  const children = new globalThis.Map<string | null, MapLocation[]>()
+  for (const location of locations) {
+    const parentId = location.ancestors?.at(-1) ?? null
+    children.set(parentId, [...(children.get(parentId) ?? []), location])
+  }
+  const current = locations.find((location) => location.isCurrent)
+  // The first collapsed ancestor is the visible row containing the current place.
+  const currentMarkerId = current?.ancestors?.find((id) =>
+    !isExpanded(`location-children:${id}`)) ?? current?.id
+
+  function renderBranches(parentId: string | null): ReactNode {
+    return children.get(parentId)?.map((location) => {
+      const hasChildren = children.has(location.id)
+      const foldKey = `location-children:${location.id}`
+      const expanded = isExpanded(foldKey)
+      const showsCurrent = currentMarkerId === location.id
+      return (
+        <li key={location.id} className="room-play__location-entry">
+          <div className="room-play__location-row">
+            {hasChildren ? (
+              <button
+                type="button" className="room-play__location-branch"
+                aria-label={`${location.name}的下级地点`}
+                aria-expanded={expanded}
+                onClick={() => onToggle(foldKey)}
+              >
+                <ChevronRight aria-hidden="true" className={expanded ? 'is-expanded' : ''} />
+              </button>
+            ) : <span className="room-play__location-branch-spacer" aria-hidden="true" />}
+            <h5 className="room-play__information-name room-play__location-name" aria-label={location.name}>
+              <span className="room-play__information-text">{location.name}</span>
+              {unreadIds.has(location.id) && <UnreadDot />}
+            </h5>
+            {(showsCurrent || location.access === 'blocked') && (
+              <span className="room-play__location-status">
+                {showsCurrent ? <span className="text-mold" title={`当前位置：${current?.name}`}>当前位置</span>
+                  : <span className="room-play__location-blocked">受阻</span>}
+              </span>
+            )}
+          </div>
+          <p className="room-play__location-description">{location.desc}</p>
+          {hasChildren && expanded && (
+            <ul className="room-play__location-children">{renderBranches(location.id)}</ul>
+          )}
+        </li>
+      )
+    })
+  }
+
+  return <ul className="room-play__location-tree">{renderBranches(null)}</ul>
 }
 
 const PHASE_LABELS: Record<AgentTurnPhase, string> = {
@@ -1646,14 +1692,6 @@ export default function RoomPage() {
     setChannel('action')
     setShowDice(true)
   }, [])
-  const notesKey = roomId ? `aidm-notes-${roomId}` : null
-  // ★ 之前"📋 案件笔记"标题是直接塞进 textarea 初始内容里的普通文本，用户
-  // 一编辑/全选删除就会把标题本身也删掉。改成占位符（placeholder），真正
-  // 的内容默认是空白，标题不会被误删，也不占用户还没写的正文空间。
-  const [notes, setNotes] = useState(
-    () => (notesKey && localStorage.getItem(notesKey)) || ''
-  )
-  const [lastSaved, setLastSaved] = useState<string | null>(() => (notesKey ? localStorage.getItem(notesKey) : null) ? new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const composerInputRef = useRef<HTMLTextAreaElement>(null)
   const recipientMenuRef = useRef<HTMLDivElement>(null)
@@ -1708,7 +1746,7 @@ export default function RoomPage() {
         content: loc.fingerprint ?? JSON.stringify([loc.name, loc.desc, loc.access]),
       })),
       ...(playerView.scene.loose_items ?? []).map((item): RoomPanelEntry => ({
-        id: `item:${item.id}`, panel: 'map',
+        id: `item:${item.id}`, panel: 'notes',
         content: JSON.stringify([item.name, item.quantity, item.condition]),
       })),
       ...playerView.known_information.map((info): RoomPanelEntry => ({
@@ -1722,7 +1760,6 @@ export default function RoomPage() {
   const unreadLocationIds = new Set(mapLocations
     .filter((loc) => isUnread(`location:${loc.id}`))
     .flatMap((loc) => [loc.id, ...(loc.ancestors ?? [])]))
-  const parentLocationIds = new Set(mapLocations.flatMap((loc) => loc.ancestors ?? []))
   const visibleNpcs = useMemo(
     () => (playerView?.scene.visible_entities ?? []).filter((entity) => {
       if (entity.kind !== 'npc') return false
@@ -3465,67 +3502,14 @@ export default function RoomPage() {
           title="已知地点（按层级）" expanded={isExpanded('locations')}
           onToggle={() => toggleExpanded('locations')} unread={unreadLocationIds.size > 0}
         >
-          <div className="room-play__location-tree">
-            {mapLocations.filter((loc) => (loc.ancestors ?? []).every((id) =>
-              isExpanded(`location-children:${id}`))).map((loc) => (
-              <div
-                key={loc.id}
-                style={{ marginLeft: `${Math.min(loc.depth, 4) * 12}px` }}
-                className={`room-play__location-entry${loc.isCurrent ? ' is-current' : ''}`}
-              >
-                <div className="room-play__location-row">
-                  {parentLocationIds.has(loc.id) ? (
-                    <button
-                      type="button" className="room-play__location-branch"
-                      aria-label={`${loc.name}的下级地点`}
-                      aria-expanded={isExpanded(`location-children:${loc.id}`)}
-                      onClick={() => toggleExpanded(`location-children:${loc.id}`)}
-                    >
-                      <ChevronRight aria-hidden="true" className={isExpanded(`location-children:${loc.id}`) ? 'is-expanded' : ''} />
-                    </button>
-                  ) : <span className="room-play__location-branch-spacer" />}
-                  <button
-                    type="button" className="room-play__information-summary"
-                    aria-label={loc.name}
-                    aria-description={unreadLocationIds.has(loc.id) ? '有新增内容' : undefined}
-                    aria-expanded={isExpanded(`location-details:${loc.id}`)}
-                    onClick={() => toggleExpanded(`location-details:${loc.id}`)}
-                  >
-                    <span aria-hidden="true">{loc.icon}</span>
-                    <span className="room-play__information-name"><span className="room-play__information-text">{loc.name}</span>{unreadLocationIds.has(loc.id) && <UnreadDot />}</span>
-                    <ChevronDown aria-hidden="true" className={isExpanded(`location-details:${loc.id}`) ? 'is-expanded' : ''} />
-                  </button>
-                </div>
-                {(loc.isCurrent || loc.access === 'blocked') && (
-                  <div className="room-play__location-status">
-                    {loc.isCurrent ? <span className="text-mold">▶ 当前位置</span>
-                      : <span className="room-play__location-blocked">受阻</span>}
-                  </div>
-                )}
-                <div hidden={!isExpanded(`location-details:${loc.id}`)} className="room-play__location-description">{loc.desc}</div>
-              </div>
-            ))}
-          </div>
+          <MapLocationTree
+            locations={mapLocations} unreadIds={unreadLocationIds}
+            isExpanded={isExpanded} onToggle={toggleExpanded}
+          />
         </InformationDisclosure>
-        {playerView?.scene.loose_items?.length ? (
-          <InformationDisclosure
-            title="当前场景物品" expanded={isExpanded('items')} onToggle={() => toggleExpanded('items')}
-            unread={playerView.scene.loose_items.some((item) => isUnread(`item:${item.id}`))}
-          >
-            <div className="room-play__information-list">
-              {playerView.scene.loose_items.map(item => (
-                <InformationDisclosure
-                  key={item.id} entry title={`${item.name}${item.quantity > 1 ? ` ×${item.quantity}` : ''}`}
-                  expanded={isExpanded(`item:${item.id}`)} onToggle={() => toggleExpanded(`item:${item.id}`)}
-                  unread={isUnread(`item:${item.id}`)}
-                >状态：{item.condition}</InformationDisclosure>
-              ))}
-            </div>
-          </InformationDisclosure>
-        ) : null}
       </BottomPanel>
 
-      {/* Panel: 线索（已有信息与手写笔记） */}
+      {/* Panel: 线索（场景物品、已知信息与手动记录） */}
       <BottomPanel
         open={openPanel === 'notes'}
         onClose={() => setOpenPanel(null)}
@@ -3533,49 +3517,28 @@ export default function RoomPage() {
         heightVh={65}
         className="room-play__bottom-panel--character-paper room-play__bottom-panel--notes"
       >
-        <InformationDisclosure
-          title="已知线索" expanded={isExpanded('information')}
-          onToggle={() => toggleExpanded('information')} unread={hasUnread('notes')}
+        <InformationSection
+          title="当前场景物品"
+          unread={playerView?.scene.loose_items?.some((item) => isUnread(`item:${item.id}`)) ?? false}
         >
-          {playerView?.known_information.length ? (
-            <div className="room-play__information-list">
-              {playerView.known_information.map((information) => (
-                <InformationDisclosure
-                  key={information.id} entry title={information.title}
-                  expanded={isExpanded(`information:${information.id}`)}
-                  onToggle={() => toggleExpanded(`information:${information.id}`)}
-                  unread={isUnread(`information:${information.id}`)}
-                >{information.summary}</InformationDisclosure>
+          {playerView?.scene.loose_items?.length ? (
+            <ul className="room-play__map-items">
+              {playerView.scene.loose_items.map((item) => (
+                <li key={item.id} className="room-play__location-entry">
+                  <h5 className="room-play__information-name room-play__location-name">
+                    <span className="room-play__information-text">{item.name}{item.quantity > 1 ? ` ×${item.quantity}` : ''}</span>
+                    {isUnread(`item:${item.id}`) && <UnreadDot />}
+                  </h5>
+                  <p className="room-play__location-description">状态：{item.condition}</p>
+                </li>
               ))}
-            </div>
-          ) : <p className="text-xs text-text-muted py-2">暂未发现线索</p>}
-        </InformationDisclosure>
-        <h4 className="room-play__notes-heading">我的笔记</h4>
-        <div className="flex gap-2 mb-3">
-          <button onClick={() => setNotes(prev => {
-              const tag = `[🔍 新线索 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}]`
-              const existingNotes = prev.trimStart()
-              return existingNotes ? `${tag}\n\n${existingNotes}` : `${tag}\n`
-            })}
-            className="flex-1 py-2 rounded-sm bg-panel border border-border-light text-text-muted text-xs font-medium flex items-center justify-center gap-1 active:bg-border-light">
-            <Plus className="w-3.5 h-3.5" /> 添加线索标签
-          </button>
-          <button onClick={() => {
-              if (!notesKey) return
-              localStorage.setItem(notesKey, notes)
-              setLastSaved(new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }))
-            }}
-            className="px-4 py-2 rounded-sm bg-brass text-white text-xs font-medium flex items-center justify-center gap-1 active:bg-brass-dark">
-            <Save className="w-3.5 h-3.5" /> 保存
-          </button>
-        </div>
-        <textarea
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          placeholder="📋 案件笔记"
-          className="room-play__notes-textarea w-full text-sm text-text-body px-1 py-2 resize-none outline-none font-mono placeholder:text-text-dim"
+            </ul>
+          ) : <p className="text-xs text-text-muted py-2">{playerView ? '当前场景暂无物品' : '等待场景同步'}</p>}
+        </InformationSection>
+        <ClueRecords
+          roomId={roomId} information={playerView?.known_information ?? []}
+          isUnread={isUnread}
         />
-        <div className="room-play__notes-save-status mt-2 text-right">{lastSaved ? `最后保存: ${lastSaved}` : '尚未保存'}</div>
       </BottomPanel>
 
       {/* Panel: 主持人语音 */}
