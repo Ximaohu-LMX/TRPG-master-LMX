@@ -49,7 +49,7 @@ FIXTURE = (
 )
 
 
-def runtime(*, accompanying=False):
+async def runtime(*, accompanying=False):
     content = ModuleContentV3.model_validate_json(FIXTURE.read_text())
     state = create_initial_game_state(
         content,
@@ -64,11 +64,35 @@ def runtime(*, accompanying=False):
             ),
         },
     )
-    state = state.model_copy(update={"scene_id": "resort_reception"}, deep=True)
     state.entities["james"]["accompanying"] = accompanying
     store = InMemoryEngineStore()
     store.register_room(module_content=content, initial_state=state)
-    return store, RuleEngineService(store), AdjudicationEngineService(store)
+    rules = RuleEngineService(store)
+    engine = AdjudicationEngineService(store)
+    # Arrive through the real travel events so the public reception map is revealed.
+    # Merely changing scene_id no longer makes undiscovered destinations known.
+    for destination in ("frog_resort", "resort_reception"):
+        view = await rules.read(
+            PlayerViewScope(room_id="companions", player_id="player", actor_id="actor")
+        )
+        await engine.submit(
+            SubmitAdjudicationRequest(
+                room_id="companions",
+                player_id="player",
+                adjudication=ActionAdjudication(
+                    request_id=f"setup-{destination}",
+                    source_revision=view.revision,
+                    actor_id="actor",
+                    summary="抵达前台了解公开地图",
+                    target=ActionTarget(kind="location", id=destination),
+                    method=ActionMethod(family="travel", description="沿公开路线前往前台"),
+                    persistence_intent="location",
+                    check=NoAdjudicationCheck(),
+                    success_effects=(EnterLocationEffect(location_id=destination),),
+                ),
+            )
+        )
+    return store, rules, engine
 
 
 async def context_for(rules, utterance, request_id="action", kind="travel"):
@@ -124,9 +148,9 @@ class RecordingClient:
 
 @pytest.mark.parametrize("destination", ["guest_room", "staff_area"])
 async def test_model_travel_keeps_one_authoritative_companion_move(destination):
-    store, rules, engine = runtime(accompanying=True)
+    store, rules, engine = await runtime(accompanying=True)
     context = await context_for(
-        rules, f"带詹姆斯进入{'客房' if destination == 'guest_room' else '员工区'}"
+        rules, f"带詹姆斯进入{'客房1' if destination == 'guest_room' else '员工区'}"
     )
     client = RecordingClient(lambda ctx: travel(ctx, destination))
     decision = await _ModelStepAdjudicator(PromptActionPlanStepAdjudicator(client)).adjudicate(
@@ -150,8 +174,8 @@ async def test_model_travel_keeps_one_authoritative_companion_move(destination):
 
 
 async def test_negated_travel_reaches_model_and_does_not_move():
-    store, rules, engine = runtime(accompanying=True)
-    context = await context_for(rules, "不要带詹姆斯进入客房")
+    store, rules, engine = await runtime(accompanying=True)
+    context = await context_for(rules, "不要带詹姆斯进入客房1")
 
     def decline(ctx):
         return travel(ctx, "guest_room").model_copy(
@@ -188,7 +212,7 @@ class EmptyMemory:
 
 
 async def test_production_plan_establishes_companion_by_rule_then_travels_with_fresh_view():
-    store, rules, engine = runtime()
+    store, rules, engine = await runtime()
 
     class SemanticClient:
         def __init__(self):
@@ -207,10 +231,10 @@ async def test_production_plan_establishes_companion_by_rule_then_travels_with_f
                 assert "keeper_capabilities" not in input_payload
                 return {
                     "kind": "action_plan",
-                    "goal": "尝试带詹姆斯去客房",
+                    "goal": "尝试带詹姆斯去客房1",
                     "steps": [
                         {"kind": "travel", "semantic_goal": "尝试扛起詹姆斯同行"},
-                        {"kind": "travel", "semantic_goal": "扶着詹姆斯去客房"},
+                        {"kind": "travel", "semantic_goal": "扶着詹姆斯去客房1"},
                     ],
                 }
             assert schema_name == "trpg_action_plan_step_adjudication"
@@ -248,7 +272,7 @@ async def test_production_plan_establishes_companion_by_rule_then_travels_with_f
         room_id="companions",
         player_id="player",
         client_action_id="semantic-companion",
-        utterance="尝试扛起詹姆斯，再扶着他去客房",
+        utterance="尝试扛起詹姆斯，再扶着他去客房1",
     )
     assert result.status in {"awaiting_narration", "completed"}
     assert len(client.revisions) == 2
@@ -265,7 +289,7 @@ async def test_production_plan_establishes_companion_by_rule_then_travels_with_f
 
 @pytest.mark.parametrize("npc_id, agrees", [("emily", True), ("james", False)])
 async def test_free_state_decision_reaches_engine_without_another_model_call(npc_id, agrees):
-    store, rules, engine = runtime()
+    store, rules, engine = await runtime()
     context = await context_for(rules, "请你接下来跟着我", kind="dialogue")
     if npc_id == "emily":
         assert "accompanying" not in store.inspect_state("companions").entities[npc_id]
@@ -294,7 +318,7 @@ async def test_free_state_decision_reaches_engine_without_another_model_call(npc
     )
     assert len(client.calls) == 1
     assert store.inspect_state("companions").entities[npc_id].get("accompanying", False) is agrees
-    next_context = await context_for(rules, "去客房", request_id="travel")
+    next_context = await context_for(rules, "去客房1", request_id="travel")
     await engine.submit(
         SubmitAdjudicationRequest(
             room_id="companions",
@@ -310,7 +334,7 @@ async def test_free_state_decision_reaches_engine_without_another_model_call(npc
 
 @pytest.mark.parametrize("roll, succeeds", [(20, True), (90, False)])
 async def test_model_binds_free_check_to_state_and_engine_waits_for_result(roll, succeeds):
-    store, rules, _ = runtime()
+    store, rules, _ = await runtime()
     engine = AdjudicationEngineService(store, dice=DiceRoller(SequenceDiceSource([roll])))
     context = await context_for(rules, "强行拖着对方跟我走", kind="action")
     proposal = ActionAdjudication(

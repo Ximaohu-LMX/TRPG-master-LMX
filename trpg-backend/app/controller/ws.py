@@ -2142,6 +2142,23 @@ async def _send_completed_turn_message(
         scene_id=player_view.scene_id,
         view_revision=player_view.revision,
         npc_reply_count=npc_reply_count,
+        participant_ids=tuple(
+            dict.fromkeys(
+                (
+                    actor_id,
+                    *(reply.speaker_id for reply in npc_replies),
+                    *(
+                        entity.id
+                        for entity in player_view.scene.visible_entities
+                        if entity.kind == "npc"
+                        and any(
+                            state.key == "accompanying" and state.value is True
+                            for state in entity.observable_state
+                        )
+                    ),
+                )
+            )
+        ),
     )
     if before_completed is not None:
         await before_completed()
@@ -2168,6 +2185,9 @@ async def _send_completed_turn_message(
             client_action_id=client_action_id,
             narration=persisted_narration,
         )
+    # 跟进 NPC 回复先持久化，摘要才能覆盖本回合完整对白。
+    if after_narration is not None:
+        await after_narration()
     # 摘要是异步可重建读模型，不能阻塞本回合的权威叙事发送。
     # 队列出队时 websocket 可能是 None，回退到应用单例上的同一服务。
     summary_service = None
@@ -2183,8 +2203,6 @@ async def _send_completed_turn_message(
             summary_service.enqueue_room_if_needed(room_id=room_id),
             name=f"enqueue-conversation-summary-{room_id}",
         )
-    if after_narration is not None:
-        await after_narration()
     return recorded
 
 
@@ -2551,6 +2569,7 @@ async def _persist_turn_narration(
     view_revision: str,
     npc_reply_count: int = 0,
     npc_replies: tuple[ActionPlanNpcReply, ...] = (),
+    participant_ids: tuple[str, ...] = (),
 ) -> tuple[bool, NarrationOutput]:
     """Persist one authoritative narration before its completion is announced."""
 
@@ -2561,6 +2580,8 @@ async def _persist_turn_narration(
         text=text,
     )
     payload = push.model_dump(by_alias=True)
+    # These identities come from the committed view, never from parsing prose.
+    payload["participantIds"] = list(dict.fromkeys((actor_id, *participant_ids)))
     payload[room_service.PERSISTED_TURN_COMPLETION_KEY] = {
         "kind": completion.kind,
         "claimed_fact_ids": list(completion.claimed_fact_ids),
@@ -3562,15 +3583,21 @@ async def room_socket(websocket: WebSocket, room_id: str, token: str | None = No
                                 )
                     elif event_type == "action.plan.submit":
                         submit_payload = ActionSubmitPayload.model_validate(raw_payload)
-                        room = await room_service.find_room_by_id(db, room_id)
-                        if room.max_players > 1 and not submit_payload.recipient.explicit:
-                            await _send_error(
-                                websocket,
-                                "BAD_REQUEST",
-                                "多人游戏必须明确 @守秘人 后才能提交主持行动",
-                                correlation_id=submit_payload.client_action_id,
+                        if not submit_payload.recipient.explicit:
+                            # 按实际成员判断单人游玩；容量和队友临时断线不改变消息路由。
+                            other_player_id = await db.scalar(
+                                select(Player.id)
+                                .where(Player.room_id == room_id, Player.id != bound_player_id)
+                                .limit(1)
                             )
-                            continue
+                            if other_player_id is not None:
+                                await _send_error(
+                                    websocket,
+                                    "BAD_REQUEST",
+                                    "多人游戏必须明确 @守秘人 后才能提交主持行动",
+                                    correlation_id=submit_payload.client_action_id,
+                                )
+                                continue
                         if submit_payload.visibility == "private":
                             await _send_error(
                                 websocket,

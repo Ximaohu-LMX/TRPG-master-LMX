@@ -507,8 +507,9 @@ const REVEAL_TICK_MS = 30
 const REVEAL_MAX_MS = 2400
 
 function mergeHistoricalMessages(current: Message[], history: Message[]): Message[] {
-  const ids = new Set(current.flatMap((item) => (item.messageId ? [item.messageId] : [])))
-  return [...history.filter((item) => !item.messageId || !ids.has(item.messageId)), ...current]
+  // 已入库消息使用历史的顺序和时间；保留历史快照尚未包含的实时消息。
+  const ids = new Set(history.flatMap((item) => (item.messageId ? [item.messageId] : [])))
+  return [...history, ...current.filter((item) => !item.messageId || !ids.has(item.messageId))]
 }
 
 function appendLiveMessage(current: Message[], message: Message): Message[] {
@@ -1462,6 +1463,7 @@ export default function RoomPage() {
   const { ruleset } = useRuleset()
   const roomInfo = useRoomPlayers(roomCode)
   const roomPlayers = roomInfo?.players ?? EMPTY_ROOM_PLAYERS
+  const singlePlayer = roomPlayers.length === 1
   const portraitVersionOverride = usePortraitGenerationStore((s) => roomId ? s.portraitVersions[roomId] : undefined)
   const clearPortraitVersion = usePortraitGenerationStore((s) => s.clearPortraitVersion)
   const portraitPlayers = useMemo(() => roomPlayers.map((player) => player.playerId === playerId && portraitVersionOverride
@@ -1493,6 +1495,27 @@ export default function RoomPage() {
   const [selectedRecipient, setSelectedRecipient] = useState<SelectedRecipient | null>(null)
   const [recipientMenuOpen, setRecipientMenuOpen] = useState(false)
   const [recipientMenuIndex, setRecipientMenuIndex] = useState(0)
+  const recipientHintStorageKey = roomId && playerId
+    ? `aidm-recipient-hint:${roomId}:${playerId}`
+    : null
+  const [dismissedRecipientHintKey, setDismissedRecipientHintKey] = useState<string | null>(null)
+  const recipientHintPreviouslyDismissed = useMemo(() => {
+    if (!recipientHintStorageKey) return true
+    try {
+      return localStorage.getItem(recipientHintStorageKey) === 'dismissed'
+    } catch {
+      return false
+    }
+  }, [recipientHintStorageKey])
+  const dismissRecipientHint = useCallback(() => {
+    if (!recipientHintStorageKey) return
+    setDismissedRecipientHintKey(recipientHintStorageKey)
+    try {
+      localStorage.setItem(recipientHintStorageKey, 'dismissed')
+    } catch {
+      // 存储受限时仍能关闭当前提示，不影响消息输入。
+    }
+  }, [recipientHintStorageKey])
   const isActionChannel = channel === 'action'
   /**
    * 草稿按频道各存各的（issue #304）。
@@ -1638,6 +1661,11 @@ export default function RoomPage() {
   const showRoomActionBanner =
     roomActionState?.status === 'awaiting_player' && pendingAdjudication !== null
   const composerDisabled = suspended || (isActionChannel && roomInfo === null)
+  const showRecipientHint = isActionChannel && !composerDisabled && !recipientMenuOpen &&
+    !recipientHintPreviouslyDismissed && dismissedRecipientHintKey !== recipientHintStorageKey
+  const recipientHintText = singlePlayer
+    ? '@选择在场角色，单人游玩时直接输入即可与主持人对话'
+    : '@选择在场角色，多人游玩时不选择角色无法触发回复'
   const actionOwnerName = roomActionState?.playerId === playerId
     ? senderName
     : displayName(
@@ -2307,6 +2335,7 @@ export default function RoomPage() {
 
   const selectRecipient = (recipient: SelectedRecipient) => {
     if (suspended) return
+    dismissRecipientHint()
     setChannel('action')
     setSelectedRecipient(recipient)
     setRecipientMenuOpen(false)
@@ -2384,7 +2413,6 @@ export default function RoomPage() {
       setActionError('请从 @ 菜单选择当前场景中的守秘人或 NPC')
       return
     }
-    const singlePlayer = roomInfo?.maxPlayers === 1
     if (hostRequest || singlePlayer) {
       submitPlayerAction({
         clientActionId: randomActionId(),
@@ -3055,22 +3083,39 @@ export default function RoomPage() {
             </button>
           )}
           {isActionChannel && (
-            <button
-              ref={mentionButtonRef}
-              type="button"
-              aria-label="选择消息接收者"
-              title="选择守秘人或 NPC"
-              aria-expanded={recipientMenuOpen}
-              aria-controls="dialogue-recipient-list"
-              onClick={() => {
-                setRecipientMenuIndex(0)
-                setRecipientMenuOpen((open) => !open)
-              }}
-              disabled={composerDisabled}
-              className={`room-play__composer-button room-play__host-mention-button${selectedRecipient ? ' is-active' : ''}`}
-            >
-              <span aria-hidden="true">@</span>
-            </button>
+            <div className="room-play__mention-anchor">
+              {showRecipientHint && (
+                <div role="note" aria-label="对话角色提示" className="room-play__recipient-hint">
+                  <span id="dialogue-recipient-hint" className="text-amber-700">{recipientHintText}</span>
+                  <button
+                    type="button"
+                    aria-label="关闭对话角色提示"
+                    onClick={dismissRecipientHint}
+                    className="room-play__recipient-hint-close"
+                  >
+                    <X size={14} aria-hidden="true" />
+                  </button>
+                </div>
+              )}
+              <button
+                ref={mentionButtonRef}
+                type="button"
+                aria-label="选择消息接收者"
+                title="选择守秘人或 NPC"
+                aria-describedby={showRecipientHint ? 'dialogue-recipient-hint' : undefined}
+                aria-expanded={recipientMenuOpen}
+                aria-controls="dialogue-recipient-list"
+                onClick={() => {
+                  dismissRecipientHint()
+                  setRecipientMenuIndex(0)
+                  setRecipientMenuOpen((open) => !open)
+                }}
+                disabled={composerDisabled}
+                className={`room-play__composer-button room-play__host-mention-button${selectedRecipient ? ' is-active' : ''}`}
+              >
+                <span aria-hidden="true">@</span>
+              </button>
+            </div>
           )}
           <textarea
             ref={composerInputRef}
@@ -3091,6 +3136,7 @@ export default function RoomPage() {
                 setSelectedRecipient(null)
               }
               if (isActionChannel && /^\s*@[^\s]*$/u.test(value) && !selectedRecipient) {
+                dismissRecipientHint()
                 setRecipientMenuIndex(0)
                 setRecipientMenuOpen(true)
               }
@@ -3126,7 +3172,7 @@ export default function RoomPage() {
               suspended
                 ? '游戏已挂起'
                 : isActionChannel
-                    ? '输入消息…'
+                    ? '输入消息'
                     : '输入行动…'
             }
             className="room-play__input"

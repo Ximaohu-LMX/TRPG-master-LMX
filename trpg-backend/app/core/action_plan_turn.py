@@ -8,6 +8,7 @@ import time
 import traceback
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Literal, Protocol, cast
 
 import structlog
@@ -124,6 +125,7 @@ class _MemorySource(Protocol):
         player_id: str,
         actor_id: str,
         revision: str,
+        before_action_id: str | None = None,
         entity_ids: tuple[str, ...] = (),
         location_id: str | None = None,
         limit: int = 8,
@@ -858,13 +860,14 @@ def _deterministic_clarification_text(context: ActionPlanNarrationContext) -> st
         step for step in context.completed_steps if getattr(step, "outcome", None) == "success"
     )
     completed_travel = any(
-        _explicit_travel_phrase(getattr(step, "semantic_goal", "")) is not None
-        for step in successful_steps
+        result.kind == "location"
+        and result.target_id == getattr(context.player_view.scene, "id", None)
+        for step in context.completed_steps
+        for result in step.committed_results
     )
     actor = _acting_address(context)
     if completed_travel:
-        scene_name = getattr(context.player_view.scene, "name", "") or "当前地点"
-        return f"{actor}已经抵达{scene_name}，但后续行动尚未形成可确认的结果。"
+        return "后续行动尚未形成可确认的结果。"
     if successful_steps:
         return "此前已经完成的行动仍然有效，但后续行动尚未形成可确认的结果。"
     if _explicit_travel_phrase(context.player_input.utterance) is not None:
@@ -1821,6 +1824,8 @@ class ActionPlanTurnApplication:
             if capabilities is not None:
                 public_info_ids = {item.id for item in context.player_view.known_information}
                 public_entity_ids = {item.id for item in context.player_view.scene.visible_entities}
+                # 随身物品不在场景实体列表里，但对当前玩家同样公开。
+                public_entity_ids.update(item.id for item in context.player_view.inventory)
                 # 用有序映射而不是 set：命中禁词时只能记来源 id，不能记词本身
                 # （禁词取自尚未公开的剧情内容），所以索引必须与来源表严格同序。
                 term_sources: dict[str, str] = {}
@@ -1925,9 +1930,20 @@ class ActionPlanTurnApplication:
                     context = context.model_copy(
                         update={
                             "narration_retry_hint": (
-                                "上一版叙事遗漏了已提交的玩家可见结果："
+                                "上一版叙事未交代或未引用本次必写的公开结果："
                                 + "、".join(item.subject_name for item in missing)
-                                + "。必须在正文明确写出，并 claim 对应 evidence ref。"
+                                + "。按 narration_evidence.description 的原意自然写入正文，"
+                                "保留数量、否定与条件，并 claim 对应 evidence ref；无需照抄原文。"
+                            )
+                        }
+                    )
+                elif attempt == 0 and exc.reason == "required_arrival_missing":
+                    context = context.model_copy(
+                        update={
+                            "narration_retry_hint": (
+                                f"已实际抵达{context.player_view.scene.name}。请自然交代抵达后的现场，"
+                                "并在 claimed_evidence_refs 引用对应的 location 结果；"
+                                "依据最终场景的公开描述、人物、物件和出口展开。"
                             )
                         }
                     )
@@ -1935,9 +1951,9 @@ class ActionPlanTurnApplication:
                     context = context.model_copy(
                         update={
                             "narration_retry_hint": (
-                                "上一句已发布叙事已经交代了当前的时间、光线或氛围。"
-                                "本回合不得再用午后阳光、夜色、窗景等环境开场重铺，"
-                                "必须先写本回合的结果、现场变化或最小澄清。"
+                                "不要照抄上一段环境开场。仍在同一场景时，先写行动结果；"
+                                "已经抵达新地点时，使用目的地的公开资料介绍现场，"
+                                "相同时段或光线可以保留。"
                             )
                         }
                     )
@@ -1989,15 +2005,13 @@ class ActionPlanTurnApplication:
                         }
                     )
                 elif attempt == 0 and exc.reason == "npc_dialogue_embedded_in_text":
-                    # 通用提示只说“没通过校验”，模型无从知道错在引号上，于是原样
-                    # 再写一遍、再被同一关拒掉——重试对这一类必然空转。
+                    # 通用提示只说“没通过校验”，模型无从知道 text 中混入了 NPC
+                    # 台词，于是原样再写一遍、再被同一关拒掉——重试会必然空转。
                     context = context.model_copy(
                         update={
                             "narration_retry_hint": (
-                                "本回合已经单独发出 NPC 气泡，守秘人正文里不得再出现"
-                                "任何引号或 NPC 的直接引语。请把台词全部放进 npc_replies，"
-                                "正文只写动作、神情、语气和现场变化，例如"
-                                "“他沉默片刻才开口”而不是把他说的话抄进正文。"
+                                "NPC 台词只放进 npc_replies，text 保留已确认结果并简短引入回答，"
+                                "不重复或转述台词；旁白与实际回答须一致。"
                             )
                         }
                     )
@@ -2021,21 +2035,7 @@ class ActionPlanTurnApplication:
                             duration_ms=int((time.monotonic() - started_at) * 1000),
                         )
                         return self._ensure_interlocutor_reply(context, degraded)
-                    if (
-                        exc.reason == "required_evidence_missing"
-                        and context.termination_status != "needs_clarification"
-                    ):
-                        logger.info(
-                            "action_plan_narration_required_evidence_fallback",
-                            evidence_refs=[
-                                item.ref
-                                for item in context.narration_evidence
-                                if item.required_in_narration
-                            ],
-                        )
-                        narration = self._required_evidence_fallback(context)
-                    else:
-                        narration = self._deterministic_narration_fallback(context)
+                    narration = self._deterministic_narration_fallback(context)
                     logger.info(
                         "action_plan_narration_completed",
                         action=context.player_input.client_action_id[:12],
@@ -2135,8 +2135,29 @@ class ActionPlanTurnApplication:
         remaining = "".join(kept).strip()
         if not remaining:
             return None
+        # Removing a sentence invalidates the model's acknowledgement of a
+        # paraphrased fact or arrival. Revalidation must recover the source text
+        # or destination name; otherwise keep results through the existing fallback.
+        source_refs = {
+            item.ref
+            for item in getattr(context, "narration_evidence", ())
+            if item.kind == "information_revealed" and item.required_in_narration
+        } | {
+            result.event_ref
+            for step in context.completed_steps
+            for result in step.committed_results
+            if result.kind == "location"
+        }
+        candidate = output.model_copy(
+            update={
+                "text": remaining,
+                "claimed_evidence_refs": tuple(
+                    ref for ref in output.claimed_evidence_refs if ref not in source_refs
+                ),
+            }
+        )
         try:
-            degraded = validate(context, output.model_copy(update={"text": remaining}))
+            degraded = validate(context, candidate)
         except ActionPlanNarrationValidationError:
             # 剩余正文仍不合规就不再逐句剥了：继续剥下去等于用未校验的碎片拼
             # 输出，安全保证只对整段成立。
@@ -2166,6 +2187,9 @@ class ActionPlanTurnApplication:
         sentences: list[str] = []
         addressing_mode = getattr(context, "addressing_mode", "second_person")
         for item in required:
+            if item.kind == "information_revealed":
+                sentences.append(item.description)
+                continue
             sentences.append(
                 f"随着调查深入，{_acting_address(context)}很快辨认出{item.subject_name}。"
             )
@@ -2191,6 +2215,7 @@ class ActionPlanTurnApplication:
     ) -> ActionPlanNarrationOutput:
         """只复述结构化已提交结果，绝不从 semantic_goal 推断持久后果。"""
 
+        clarification_text = None
         if context.termination_status == "needs_clarification":
             visible_dead = tuple(
                 entity
@@ -2204,17 +2229,12 @@ class ActionPlanTurnApplication:
                 word in context.player_input.utterance for word in ("尸体", "遗体")
             ):
                 names = "、".join(entity.name for entity in visible_dead)
-                return ActionPlanNarrationOutput(
-                    kind="clarification",
-                    text=(
-                        f"{names}的尸体就在当前场景中。"
-                        f"{_acting_address(context)}是想检查尸体、搜查随身物品，还是处理现场？"
-                    ),
+                clarification_text = (
+                    f"{names}的尸体就在当前场景中。"
+                    f"{_acting_address(context)}是想检查尸体、搜查随身物品，还是处理现场？"
                 )
-            return ActionPlanNarrationOutput(
-                kind="clarification",
-                text=_deterministic_clarification_text(context),
-            )
+            else:
+                clarification_text = _deterministic_clarification_text(context)
         labels = {
             ("consciousness", "unconscious"): "失去了意识",
             ("consciousness", "dead"): "已经死亡",
@@ -2255,6 +2275,42 @@ class ActionPlanTurnApplication:
             for result, label in results
             if label is not None or result in inventory_results
         )
+        arrivals = tuple(
+            result
+            for result, _label in results
+            if result.kind == "location"
+            and result.target_id == getattr(context.player_view.scene, "id", None)
+        )
+        if arrivals:
+            scene = context.player_view.scene
+            statements.insert(0, f"{_acting_address(context)}来到{scene.name}。{scene.description}")
+            people = [
+                item.name for item in scene.visible_entities if getattr(item, "kind", None) == "npc"
+            ]
+            objects = [
+                item.name for item in scene.visible_entities if getattr(item, "kind", None) != "npc"
+            ]
+            if people:
+                statements.append("、".join(people) + "在这里。")
+            if objects:
+                statements.append("周围还有" + "、".join(objects) + "。")
+            if scene.available_exits:
+                statements.append(
+                    "这里还有通向"
+                    + "、".join(item.name for item in scene.available_exits)
+                    + "的出入口。"
+                )
+            refs = tuple(dict.fromkeys((*refs, *(item.event_ref for item in arrivals))))
+        if any(item.required_in_narration for item in getattr(context, "narration_evidence", ())):
+            required_output = ActionPlanTurnApplication._required_evidence_fallback(context)
+            statements.append(required_output.text)
+            refs = tuple(dict.fromkeys((*refs, *required_output.claimed_evidence_refs)))
+        if clarification_text is not None:
+            return ActionPlanNarrationOutput(
+                kind="clarification",
+                text="\n".join((*statements, clarification_text)),
+                claimed_evidence_refs=refs,
+            )
         outcomes = tuple(step.outcome for step in context.completed_steps)
         if "cancelled" in outcomes or context.termination_status == "cancelled":
             status_text = "这次行动已经取消。"
@@ -2263,14 +2319,17 @@ class ActionPlanTurnApplication:
             status_text = (
                 "当前步骤未能成功；此前已经完成的步骤仍然保留。"
                 if "success" in outcomes
+                else "这次行动未能成功。"
+                if statements
                 else "这次行动未能成功，局面没有产生当前可确认的新结果。"
             )
         else:
             status_text = "这次行动已经按当前可确认的结果完成。"
+        separator = "\n\n" if arrivals else ""
         if outcomes and outcomes[-1] != "success":
-            fallback_text = status_text + "".join(statements)
+            fallback_text = separator.join((status_text, *statements))
         else:
-            fallback_text = "".join(statements) or status_text
+            fallback_text = separator.join(statements) or status_text
         return ActionPlanNarrationOutput(
             # 失败或取消时即使存在失败分支效果，也必须先明确行动结果，不能让
             # 玩家把后面的状态变化误读成目标已经成功达成。
@@ -2393,52 +2452,12 @@ class ActionPlanTurnApplication:
                 player_id=player_input.player_id,
                 actor_id=player_input.actor_id,
                 revision=player_view.revision,
+                before_action_id=player_input.client_action_id,
                 location_id=player_view.scene_id,
                 entity_ids=entity_ids,
             )
         except Exception as exc:  # noqa: BLE001 - 读模型故障必须 fail-open
             logger.warning("memory_context_degraded", error_type=type(exc).__name__)
-            return empty
-
-    async def _read_keeper_memory_context(
-        self,
-        *,
-        player_input: PlayerInput,
-        player_view: PlayerView,
-    ) -> MemoryContext:
-        """Keeper 读取保持 room 级历史，不再按玩家受众收窄。"""
-
-        empty = MemoryContext(
-            room_id=player_input.room_id,
-            player_id=player_input.player_id,
-            actor_id=player_input.actor_id,
-            as_of_revision=player_view.revision,
-        )
-        if self._memory_source is None:
-            return empty
-        try:
-            entity_ids = _matching_visible_entity_ids(
-                player_input.utterance,
-                player_view,
-            )
-            if (
-                player_input.interlocutor_id is not None
-                and player_input.interlocutor_id not in entity_ids
-            ):
-                entity_ids = (*entity_ids, player_input.interlocutor_id)
-            read_keeper_context = getattr(self._memory_source, "read_keeper_context", None)
-            if read_keeper_context is None:
-                read_keeper_context = self._memory_source.read_context
-            return await read_keeper_context(
-                room_id=player_input.room_id,
-                player_id=player_input.player_id,
-                actor_id=player_input.actor_id,
-                revision=player_view.revision,
-                location_id=player_view.scene_id,
-                entity_ids=entity_ids,
-            )
-        except Exception as exc:  # noqa: BLE001 - 读模型故障必须 fail-open
-            logger.warning("keeper_memory_context_degraded", error_type=type(exc).__name__)
             return empty
 
     async def _narration_addressing(
@@ -2490,6 +2509,56 @@ class _EmptyRecentHistorySource:
     ) -> RecentTurnContext:
         del exclude_correlation_id, budget
         return RecentTurnContext.empty(player_input=player_input, player_view=player_view)
+
+
+async def _read_keeper_memory_context(
+    memory_source: _MemorySource | None,
+    player_input: PlayerInput,
+    player_view: PlayerView,
+) -> MemoryContext:
+    """Keeper 读取保持 room 级历史，不再按玩家受众收窄。"""
+
+    empty = MemoryContext(
+        room_id=player_input.room_id,
+        player_id=player_input.player_id,
+        actor_id=player_input.actor_id,
+        as_of_revision=player_view.revision,
+    )
+    if memory_source is None:
+        return empty
+    try:
+        entity_ids = tuple(
+            dict.fromkeys(
+                (
+                    *_matching_visible_entity_ids(player_input.utterance, player_view),
+                    *(
+                        entity.id
+                        for entity in player_view.scene.visible_entities
+                        if entity.kind == "npc"
+                    ),
+                )
+            )
+        )
+        if (
+            player_input.interlocutor_id is not None
+            and player_input.interlocutor_id not in entity_ids
+        ):
+            entity_ids = (*entity_ids, player_input.interlocutor_id)
+        read_keeper_context = getattr(memory_source, "read_keeper_context", None)
+        if read_keeper_context is None:
+            read_keeper_context = memory_source.read_context
+        return await read_keeper_context(
+            room_id=player_input.room_id,
+            player_id=player_input.player_id,
+            actor_id=player_input.actor_id,
+            revision=player_view.revision,
+            before_action_id=player_input.client_action_id,
+            location_id=player_view.scene_id,
+            entity_ids=entity_ids,
+        )
+    except Exception as exc:  # noqa: BLE001 - 读模型故障必须 fail-open
+        logger.warning("keeper_memory_context_degraded", error_type=type(exc).__name__)
+        return empty
 
 
 def build_action_plan_turn_application(
@@ -2630,6 +2699,7 @@ def build_action_plan_turn_application(
         on_step_failure=_log_step_adjudication_failure,
         recent_history_source=(history_source if resolved.recent_history_enabled else None),
         recent_history_budget=recent_history_budget,
+        memory_reader=partial(_read_keeper_memory_context, memory_source),
     )
     return ActionPlanTurnApplication(
         store=store,

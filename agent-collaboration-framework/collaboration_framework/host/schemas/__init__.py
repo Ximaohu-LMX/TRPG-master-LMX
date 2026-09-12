@@ -25,6 +25,7 @@ from .context import (
 from .history import (
     HistoryVisibility,
     RecentHistoryBudget,
+    RecentNpcReply,
     RecentSafeResult,
     RecentTurn,
     RecentTurnContext,
@@ -66,6 +67,7 @@ __all__ = [
     "PlanRunStatus",
     "PlanStepStatus",
     "RecentHistoryBudget",
+    "RecentNpcReply",
     "RecentSafeResult",
     "RecentTurn",
     "RecentTurnContext",
