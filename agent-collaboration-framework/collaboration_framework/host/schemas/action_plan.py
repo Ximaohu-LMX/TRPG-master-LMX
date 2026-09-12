@@ -433,6 +433,13 @@ class ActionPlanStepContext(ContractModel):
                 player_input=self.player_input,
                 player_view=self.player_view,
             )
+        if any(entry.room_id != self.player_input.room_id for entry in self.memories):
+            raise ValueError("ActionPlanStepContext memories room_id 不一致")
+        if self.conversation_summary is not None and (
+            self.conversation_summary.room_id != self.player_input.room_id
+            or self.conversation_summary.player_id != self.player_input.player_id
+        ):
+            raise ValueError("ActionPlanStepContext conversation summary scope 不一致")
         _validate_keeper_scope(self.keeper_capabilities, self.player_view)
         return self
 
@@ -477,6 +484,42 @@ class ActionPlanNarrationContext(ContractModel):
     previous_published_narration: str | None = Field(default=None, max_length=2000)
     # 仅供服务端输出校验使用；该索引被排除在模型 payload 外，避免反向泄漏。
     forbidden_disclosure_terms: tuple[str, ...] = Field(default=(), exclude=True)
+
+    def to_prompt_dict(self) -> JsonObject:
+        """Project public companions and facts without changing the stored context."""
+
+        payload = self.to_json_dict()
+        view = self.player_view.to_json_dict()
+        view.pop("background")
+        view.pop("checkpoint_options")
+        information_ids = {
+            item.subject_id
+            for item in self.narration_evidence
+            if item.kind == "information_revealed"
+        }
+        view["known_information"] = [
+            item.to_json_dict()
+            for item in self.player_view.known_information
+            if item.id not in information_ids
+        ]
+        payload["player_view"] = view
+        # Companions remain visible entities, but their presence is not a new
+        # encounter. Derive this cue only from the final public state, never
+        # from module placement, old dialogue, or an earlier follow request.
+        payload["accompanying_npcs"] = [
+            {"id": entity.id, "name": entity.name}
+            for entity in self.player_view.scene.visible_entities
+            if entity.kind == "npc"
+            and any(
+                state.key == "accompanying" and state.value is True
+                for state in entity.observable_state
+            )
+        ]
+        payload["completed_steps"] = [
+            step.model_dump(mode="json", exclude={"narration_evidence"})
+            for step in self.completed_steps
+        ]
+        return payload
 
     @model_validator(mode="after")
     def validate_narration_scope(self) -> ActionPlanNarrationContext:
@@ -524,15 +567,11 @@ class ActionPlanNpcReply(ContractModel):
 
 
 class NarrationStateClaim(ContractModel):
-    """叙事自报的一条持久状态断言，供服务端做集合包含校验。
-
-    ``value`` 不用 ``JsonValue``：``CommittedResult.state_value`` 实际只出现字符串
-    与布尔两种（``"unconscious"`` / ``True``），而 ``JsonValue`` 会在结构化输出的
-    JSON Schema 里展开成一大片 anyOf，拖低模型对整个 schema 的遵从度。
-    """
+    """叙事中一条有已提交结果或当前公开状态支持的持久状态断言。"""
 
     entity_id: str = Field(min_length=1)
     key: str = Field(min_length=1)
+    # 与 CommittedResult.state_value 的类型保持一致，避免 JsonValue 展开过大的 schema。
     value: str | bool
 
 

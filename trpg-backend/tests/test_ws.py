@@ -83,13 +83,15 @@ class _WsCountingActionPlanNarration:
 class _WsFirstPersonThenSafeNarration:
     def __init__(self) -> None:
         self.calls = 0
+        self.accepted_text = ""
 
     async def generate(self, context) -> JsonObject:
-        del context
         self.calls += 1
+        scene_name = context.player_view.scene.name
+        self.accepted_text = f"你带着托马斯进入{scene_name}。"
         return {
             "kind": "narration",
-            "text": ("我带着你们进入墓地。" if self.calls == 1 else "你带着托马斯进入墓地。"),
+            "text": (f"我带着你们进入{scene_name}。" if self.calls == 1 else self.accepted_text),
             "claimed_evidence_refs": [],
             "suggested_actions": [],
         }
@@ -133,12 +135,14 @@ class _WsNarrationWithInvalidNpcFollowup:
         }
 
 
-class _WsMissingParticipantOpening:
+class _WsInvalidOpening:
+    """Exercise opening protocol rejection; solo participant names are optional."""
+
     async def generate(self, context: OpeningNarrationContext) -> JsonObject:
         del context
         return {
-            "kind": "narration",
-            "text": "这段模型输出遗漏了所有在场角色姓名。",
+            "kind": "clarification",
+            "text": "现在准备做什么？",
             "claimed_fact_ids": [],
             "suggested_actions": [],
         }
@@ -763,7 +767,7 @@ def test_invalid_opening_model_falls_back_after_room_enters_in_game(
         "session_view_application",
         replace(
             ws_controller.session_view_application,
-            opening_narration_model=_WsMissingParticipantOpening(),
+            opening_narration_model=_WsInvalidOpening(),
         ),
     )
 
@@ -1717,9 +1721,9 @@ def test_subject_ownership_failure_retries_before_publishing_narration(
         )
 
     assert narration_model.calls == 2
-    assert completed["payload"]["narration"]["text"] == "你带着托马斯进入墓地。"
-    assert narration["payload"]["text"] == "你带着托马斯进入墓地。"
-    assert all("我带着你们进入墓地" not in str(message) for message in seen)
+    assert completed["payload"]["narration"]["text"] == narration_model.accepted_text
+    assert narration["payload"]["text"] == narration_model.accepted_text
+    assert all("我带着你们进入" not in str(message) for message in seen)
 
 
 def test_keeper_turn_emits_followup_npc_dialogue_and_recovers_it(
