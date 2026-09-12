@@ -1,11 +1,18 @@
 """Immediate and queued keeper requests must execute the same frozen rule."""
 
-from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from collaboration_framework.contracts import ModuleContentV3
+from collaboration_framework.contracts import (
+    ActionAdjudication,
+    ActionMethod,
+    ActionTarget,
+    EnterLocationEffect,
+    ModuleContentV3,
+    NoAdjudicationCheck,
+    SubmitAdjudicationRequest,
+)
 from sqlalchemy import func, select
 from starlette.testclient import TestClient
 
@@ -81,13 +88,31 @@ def _prepare_room(client, monkeypatch):
 
 
 async def _place_party(room_id):
-    async with ws_controller.async_session_factory() as db:
-        session = await db.get(GameSession, room_id)
-        assert session is not None
-        state = deepcopy(session.state_json)
-        state["scene_id"] = "resort_reception"
-        session.state_json = state
-        await db.commit()
+    application = ws_controller.session_view_application
+    async with application.store.transaction(room_id) as transaction:
+        runtime = await transaction.load_runtime()
+    actor = next(actor for actor in runtime.game_state.actors.values() if actor.player_id)
+    assert actor.player_id is not None
+    # The reception layout is revealed by arrival, not by a bare scene_id edit.
+    for destination in ("frog_resort", "resort_reception"):
+        view = await application.current_player_view(room_id=room_id, player_id=actor.player_id)
+        await ws_controller.adjudication_engine_service.submit(
+            SubmitAdjudicationRequest(
+                room_id=room_id,
+                player_id=actor.player_id,
+                adjudication=ActionAdjudication(
+                    request_id=f"setup-{destination}",
+                    source_revision=view.revision,
+                    actor_id=view.self_actor.id,
+                    summary="沿公开路线抵达前台",
+                    target=ActionTarget(kind="location", id=destination),
+                    method=ActionMethod(family="travel", description="前往前台"),
+                    persistence_intent="location",
+                    check=NoAdjudicationCheck(),
+                    success_effects=(EnterLocationEffect(location_id=destination),),
+                ),
+            )
+        )
 
 
 async def _snapshot(room_id):
@@ -180,11 +205,15 @@ def test_rule_once_executes_and_replays_without_replanning(
     with sync_client.websocket_connect(f"/ws/{room['roomId']}?token={token}") as ws:
         ws.portal.call(_place_party, room["roomId"])
         _join(ws, room)
-        _execute(ws, room, path)
+        completed = _execute(ws, room, path)
+        text = completed["payload"]["narration"]["text"]
+        assert "詹姆斯·莱恩已经死亡" in text
+        assert "强行带离没能救回他" in text
+        assert "城郊道路" in text
         before = ws.portal.call(_snapshot, room["roomId"])
         state, _, _, item, narrations = before
         assert state["entities"]["james"]["under_forced_custody"] is True
-        assert state["entities"]["james"]["alive"] is False
+        assert state["entities"]["james"]["consciousness"] == "dead"
         assert item is not None and item.execution_route == "rule_once"
         assert item.status == "completed"
         assert narrations == 1

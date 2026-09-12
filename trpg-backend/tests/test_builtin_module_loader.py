@@ -95,7 +95,7 @@ async def test_happy_frog_parent_publication_preserves_old_version(
         (HAPPY_FROG_VILLAGE_MODULE_ID, HAPPY_FROG_VILLAGE_SPEC.version),
     )
     assert old is not None and old.content_json == old_content
-    assert new is not None and new.version == "3.0.10"
+    assert new is not None and new.version == HAPPY_FROG_VILLAGE_SPEC.version
     parents = {
         entity["id"]: entity
         for entity in new.content_json["entities"]

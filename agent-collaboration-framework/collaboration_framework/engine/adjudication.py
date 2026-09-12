@@ -72,7 +72,7 @@ from .persistent_results import (
     validate_persistent_effects,
 )
 from .ports import EngineStore
-from .projection_v3 import project_v3, rule_check_skill_id
+from .projection_v3 import project_v3, public_known_information, rule_check_skill_id
 from .rules_v3 import (
     agent_match_admits,
     create_rule_agenda,
@@ -705,7 +705,12 @@ class AdjudicationEngineService:
             allow_party_scene_transition = False
             if consent_player_ids is not None:
                 current_players = tuple(
-                    sorted({actor.player_id for actor in runtime.game_state.actors.values()})
+                    sorted(
+                        {
+                            actor.player_id
+                            for actor in runtime.game_state.actors.values()
+                        }
+                    )
                 )
                 if consent_player_ids != current_players or len(current_players) <= 1:
                     self._reject_validation(
@@ -717,9 +722,17 @@ class AdjudicationEngineService:
                 allow_party_time_advance = True
             if scene_consent_player_ids is not None:
                 current_players = tuple(
-                    sorted({actor.player_id for actor in runtime.game_state.actors.values()})
+                    sorted(
+                        {
+                            actor.player_id
+                            for actor in runtime.game_state.actors.values()
+                        }
+                    )
                 )
-                if scene_consent_player_ids != current_players or len(current_players) <= 1:
+                if (
+                    scene_consent_player_ids != current_players
+                    or len(current_players) <= 1
+                ):
                     self._reject_validation(
                         "SCENE_CONSENT_STALE",
                         repairability="requires_player_choice",
@@ -1353,7 +1366,11 @@ class AdjudicationEngineService:
                 player_id=player_id,
                 actor_id=actor_id,
             ),
-            "committed_results": committed_results_from_events(final.events),
+            "committed_results": committed_results_from_events(
+                final.events,
+                item_ids=frozenset(runtime.game_state.item_instances)
+                | frozenset(final.state.item_instances),
+            ),
         }
         if final.pending_decision is not None:
             return AdjudicationExecution(
@@ -1398,7 +1415,7 @@ class AdjudicationEngineService:
         player_id: str,
         actor_id: str,
     ) -> tuple[NarrationEvidence, ...]:
-        """Project newly discovered entities through the final player-safe view."""
+        """Project newly public results from committed events and before/after state."""
 
         candidate_events = tuple(
             event
@@ -1416,7 +1433,28 @@ class AdjudicationEngineService:
                 is not True
             )
         )
-        if not candidate_events:
+        module = runtime.module_content
+        old_public = {
+            item.id for item in public_known_information(module, runtime.game_state)
+        }
+        new_public = {
+            item.id: item for item in public_known_information(module, new_state)
+        }
+        narration_ids = {
+            item.id
+            for item in module.information
+            if "narration" in item.presentation.channels
+        }
+        information_events = tuple(
+            event
+            for event in events
+            if event.visibility == "public"
+            and event.type == "information.revealed"
+            and event.payload.get("scope") == "party"
+            and event.payload.get("information_id") in new_public.keys() - old_public
+            and event.payload.get("information_id") in narration_ids
+        )
+        if not candidate_events and not information_events:
             return ()
         final_runtime = runtime.model_copy(
             update={
@@ -1434,13 +1472,15 @@ class AdjudicationEngineService:
             ).scene.visible_entities
         }
         evidence: list[NarrationEvidence] = []
+        seen: set[str] = set()
         for event in candidate_events:
             entity_id = event.payload.get("entity_id")
             if not isinstance(entity_id, str):
                 continue
             projected = visible.get(entity_id)
-            if projected is None:
+            if projected is None or entity_id in seen:
                 continue
+            seen.add(entity_id)
             evidence.append(
                 NarrationEvidence(
                     ref=event.event_id,
@@ -1452,7 +1492,28 @@ class AdjudicationEngineService:
                     required_in_narration=True,
                 )
             )
-        return tuple(evidence)
+        seen_information: set[str] = set()
+        for event in information_events:
+            information_id = event.payload.get("information_id")
+            if (
+                not isinstance(information_id, str)
+                or information_id in seen_information
+            ):
+                continue
+            item = new_public[information_id]
+            seen_information.add(information_id)
+            evidence.append(
+                NarrationEvidence(
+                    ref=event.event_id,
+                    kind="information_revealed",
+                    subject_id=item.id,
+                    subject_name=item.title,
+                    description=item.content,
+                    required_in_narration=True,
+                )
+            )
+        event_order = {event.event_id: index for index, event in enumerate(events)}
+        return tuple(sorted(evidence, key=lambda item: event_order[item.ref]))
 
     @staticmethod
     def _validate_identity(
@@ -1922,7 +1983,11 @@ class AdjudicationEngineService:
         if origin is None:
             return None
         rule = next(
-            (item for item in runtime.module_content.rules if item.id == origin.rule_id),
+            (
+                item
+                for item in runtime.module_content.rules
+                if item.id == origin.rule_id
+            ),
             None,
         )
         if rule is None:
@@ -3031,9 +3096,7 @@ class AdjudicationEngineService:
         actor_id: str,
         offset: int,
     ) -> tuple[GameState, tuple[DomainEvent, ...]]:
-        self._validate_ruleset_action(
-            runtime, step, rule_id=rule_id, actor_id=actor_id
-        )
+        self._validate_ruleset_action(runtime, step, rule_id=rule_id, actor_id=actor_id)
         action = ruleset_registry.require_world_action(
             runtime.module_content.world_ref, step.action_id
         )

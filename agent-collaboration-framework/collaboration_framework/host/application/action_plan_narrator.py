@@ -103,6 +103,19 @@ class ActionPlanNarrator:
             for step in context.completed_steps
             for result in step.committed_results
         )
+        arrival_refs = {
+            result.event_ref
+            for result in committed_results
+            if result.kind == "location"
+            and result.target_id == context.player_view.scene.id
+        }
+        arrived = bool(arrival_refs)
+        if (
+            arrived
+            and context.player_view.scene.name not in output.text
+            and not arrival_refs.intersection(output.claimed_evidence_refs)
+        ):
+            raise ActionPlanNarrationValidationError("required_arrival_missing")
         # 申报字段的校验退化为对引擎真值的集合包含判断，不含任何词表。这不是
         # “信任模型”：撒谎的成本从绕过一个动词表，变成必须写一个引擎当场查表
         # 否掉的 id。
@@ -136,23 +149,38 @@ class ActionPlanNarrator:
         required = tuple(
             item for item in context.narration_evidence if item.required_in_narration
         )
-        mentioned_required = tuple(
+        literal_information = tuple(
             item
             for item in required
-            if any(
-                label and label in output.text
-                for label in (item.subject_name, *item.subject_aliases)
+            if item.kind == "information_revealed"
+            and item.description.strip()
+            and _source_pattern(item.description).search(output.text) is not None
+        )
+        # Like the opening, public facts guide natural rewriting, not literal
+        # acceptance. A claimed ref acknowledges a source; it does not prove
+        # semantic completeness. Verbatim sources still recover missing refs.
+        acknowledged_required = tuple(
+            item
+            for item in required
+            if (
+                item.ref in output.claimed_evidence_refs or item in literal_information
+                if item.kind == "information_revealed"
+                else any(
+                    label and label in output.text
+                    for label in (item.subject_name, *item.subject_aliases)
+                )
             )
         )
-        if len(mentioned_required) != len(required):
+        if len(acknowledged_required) != len(required):
             raise ActionPlanNarrationValidationError("required_evidence_missing")
-        # The prose is the player-facing source of truth. Once it demonstrably
-        # reports a required safe result, record its public ref deterministically
-        # instead of discarding otherwise valid narration because the model
-        # omitted a bookkeeping field.
+        # Recover refs for literal information and explicitly named discoveries;
+        # a paraphrase uses the model's source declaration instead.
         claimed = tuple(
             dict.fromkeys(
-                (*output.claimed_evidence_refs, *(item.ref for item in mentioned_required))
+                (
+                    *output.claimed_evidence_refs,
+                    *(item.ref for item in acknowledged_required),
+                )
             )
         )
         if claimed != output.claimed_evidence_refs:
@@ -160,21 +188,29 @@ class ActionPlanNarrator:
         rejection = narration_text_rejection_reason(output.text)
         if rejection is not None:
             raise ActionPlanNarrationValidationError(rejection)
-        if output.npc_replies and _EMBEDDED_DIALOGUE_RE.search(output.text):
+        # Match server-provided complete source bodies; never trust model source labels.
+        # Masking preserves offsets for sentence-level degradation of free prose.
+        free_text = output.text
+        for item in literal_information:
+            free_text = _source_pattern(item.description).sub(
+                lambda match: " " * len(match.group()), free_text
+            )
+        if output.npc_replies and _EMBEDDED_DIALOGUE_RE.search(free_text):
             raise ActionPlanNarrationValidationError(
                 "npc_dialogue_embedded_in_text",
                 output=output,
-                offending_spans=_quoted_sentence_spans(output.text),
+                offending_spans=_quoted_sentence_spans(free_text),
             )
         subject_rejection = narration_subject_rejection_reason(
-            output.text,
+            free_text,
             addressing_mode=getattr(context, "addressing_mode", "second_person"),
         )
         if subject_rejection is not None:
             raise ActionPlanNarrationValidationError(subject_rejection)
         atmosphere_rejection = narration_atmosphere_rejection_reason(
-            output.text,
+            free_text,
             getattr(context, "previous_published_narration", None),
+            scene_changed=arrived,
         )
         if atmosphere_rejection is not None:
             raise ActionPlanNarrationValidationError(atmosphere_rejection)
@@ -224,6 +260,13 @@ class ActionPlanNarrator:
         ):
             raise ActionPlanNarrationValidationError("clarification_kind")
         return output
+
+
+def _source_pattern(body: str) -> re.Pattern[str]:
+    """Allow layout whitespace only; retain punctuation, negation and quantities."""
+    return re.compile(
+        r"\s*".join(re.escape(char) for char in body if not char.isspace())
+    )
 
 
 def _schema_error_fields(exc: Exception) -> tuple[str, ...]:
